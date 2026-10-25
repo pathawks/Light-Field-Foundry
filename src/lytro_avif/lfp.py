@@ -2,7 +2,8 @@
 
 LFP section references identify SHA-1 of their exact bytes. Original JSON bytes
 are retained independently of parsed objects, including signed numeric zero.
-Only the measured F01 upright, full-frame center geometry is admitted.
+Raw input admission uses the measured F01 upright full-frame center geometry.
+Explicit exported-stack inputs retain their native baked geometry.
 """
 
 from __future__ import annotations
@@ -313,6 +314,63 @@ def read_lfp(path: Path) -> LfpContainer:
     return LfpContainer(path, version, flags, master.metadata, master.json_bytes, sections)
 
 
+def capture_reference(lfp: LfpContainer) -> str:
+    """Return one capture's raw payload identity, including external references."""
+    frames = lfp._frames()
+    frame = frames[0].get("frame") if len(frames) == 1 else None
+    reference = frame.get("imageRef") if isinstance(frame, dict) else None
+    if not isinstance(reference, str) or not REFERENCE.fullmatch(reference):
+        raise LytroError("LFP must identify exactly one capture frame with a SHA-1 imageRef")
+    return reference
+
+
+def _views(lfp: LfpContainer) -> list[dict[str, Any]]:
+    picture = lfp.master.get("picture", lfp.master)
+    if not isinstance(picture, dict):
+        raise LytroError("Processed LFP picture must be an object")
+    views = picture.get("views", picture.get("viewArray", []))
+    if not isinstance(views, list) or any(not isinstance(view, dict) for view in views):
+        raise LytroError("Processed LFP views must be an array of objects")
+    return views
+
+
+def _accelerations(lfp: LfpContainer) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    result = []
+    for view in _views(lfp):
+        accelerations = view.get("accelerations", view.get("accelerationArray", []))
+        if not isinstance(accelerations, list) or any(
+            not isinstance(a, dict) for a in accelerations
+        ):
+            raise LytroError("Processed LFP accelerations must be an array of objects")
+        result.extend((view, acceleration) for acceleration in accelerations)
+    return result
+
+
+def extract_recipe(lfp: LfpContainer) -> dict[str, Any]:
+    """Select exactly one saved recipe, without requiring any image assets."""
+    recipes = [
+        value
+        for view in _views(lfp)
+        for key, value in view.items()
+        if re.fullmatch(r"recipe\d*", key)
+    ]
+    if len(recipes) != 1 or not isinstance(recipes[0], dict):
+        raise LytroError("LFP must contain exactly one saved recipe or recipeN object")
+    return recipes[0]
+
+
+def has_edof(lfp: LfpContainer) -> bool:
+    """Whether a recognized EDOF acceleration is declared (not asset validation)."""
+    return any(a.get("kind", a.get("type")) == "edofWarp" for _, a in _accelerations(lfp))
+
+
+@dataclass(frozen=True)
+class EdofImage:
+    witness_image: bytes
+    image_size: tuple[int, int]
+    view: dict[str, Any]
+
+
 @dataclass(frozen=True)
 class FloatDepth:
     samples: NDArray[np.float32]
@@ -326,16 +384,34 @@ class FloatDepth:
     witness_image: bytes
     witness_perspective: tuple[float, float]
     image_size: tuple[int, int]
+    exported_stack: bool = False
 
     @property
     def mapping_provenance(self) -> dict[str, Any]:
         return {
-            "source": "TNT edofWarp packedFloat Float32 little-endian",
+            "source": (
+                "native TNT edofWarp "
+                + str(self.descriptor.get("representation"))
+                + "; original "
+                + (
+                    "8-bit precision"
+                    if self.descriptor.get("representation") == "pngEncodedByte"
+                    else "Float32 precision"
+                )
+                if self.exported_stack
+                else "TNT edofWarp packedFloat Float32 little-endian"
+            ),
             "lambda_at_code_0": self.max_lambda,
             "lambda_at_code_4095": self.min_lambda,
             "quantization": "nearest integer, ties to even; Float64 evaluation",
             "native_raster": [self.width, self.height],
-            "alignment": "upright canonical center, full-frame normalized coordinates",
+            "alignment": (
+                "native center/depth with saved geometry baked in"
+                if self.exported_stack
+                else "upright canonical center, full-frame normalized coordinates"
+            ),
+            "color_witness": bool(self.witness_image),
+            "view_extent": list(self.image_size),
             "mapToImage": self.map_to_image,
             "apple_disparity": "relative inverse lambda; code increases toward near; no metric calibration",
         }
@@ -354,11 +430,11 @@ def _dimension(value: Any, name: str) -> int:
 
 
 def _read_owned_asset(value: Any, asset_root: Path, maximum: int) -> bytes:
-    """Read only regular, nonsymlink files below the explicit current-run root.
+    """Read only regular, nonsymlink files below the explicitly supplied asset root.
 
     File-descriptor-relative opens prevent a path component from being replaced
-    by an escaping symlink between validation and reading. No source-directory
-    or home-directory lookup is attempted.
+    by an escaping symlink between validation and reading. The root may be a generated workspace or an explicitly selected exported
+    stack directory; no implicit home-directory lookup is attempted.
     """
     if not isinstance(value, str) or not value or "\0" in value:
         raise LytroError("Unpacked TNT imagePath must be a nonempty path")
@@ -431,53 +507,13 @@ def _asset_payload(
     return _read_owned_asset(descriptor.get("imagePath"), asset_root, maximum)
 
 
-def extract_depth(path: Path, *, asset_root: Path | None = None) -> FloatDepth:
-    lfp = read_lfp(path)
-    picture = lfp.master.get("picture", lfp.master)
-    if not isinstance(picture, dict):
-        raise LytroError("Processed LFP picture must be an object")
-    views = picture.get("views", picture.get("viewArray", []))
-    if not isinstance(views, list):
-        raise LytroError("Processed LFP views must be an array")
-    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for view in views:
-        if not isinstance(view, dict):
-            raise LytroError("Malformed processed LFP view")
-        accelerations = view.get("accelerations", view.get("accelerationArray", []))
-        if not isinstance(accelerations, list):
-            raise LytroError("Processed LFP accelerations must be an array")
-        for acceleration in accelerations:
-            if isinstance(acceleration, dict) and "depthMap" in acceleration:
-                matches.append((view, acceleration))
-    if len(matches) != 1:
-        raise LytroError("Processed LFP must contain exactly one depth-bearing view acceleration")
-    view, acceleration = matches[0]
-    if acceleration.get("kind", acceleration.get("type")) != "edofWarp":
-        raise LytroError("Only TNT edofWarp depth is admitted")
-    descriptor = acceleration["depthMap"]
-    if not isinstance(descriptor, dict) or descriptor.get("representation") != "packedFloat":
-        raise LytroError("TNT depth must explicitly declare packedFloat")
-    width = _dimension(descriptor.get("width"), "depth width")
-    height = _dimension(descriptor.get("height"), "depth height")
-    if width * height > MAX_PIXELS:
-        raise LytroError("Depth dimensions exceed the 16-Mpixel bound")
-    payload = _asset_payload(lfp, descriptor, asset_root, width * height * 4)
-    if len(payload) != width * height * 4:
-        raise LytroError("packedFloat depth extent is not width × height × 4")
-    samples = np.frombuffer(payload, dtype="<f4").reshape(height, width).copy()
-    a = _number(descriptor.get("minLambda"), "depth minLambda")
-    b = _number(descriptor.get("maxLambda"), "depth maxLambda")
-    if (
-        a == b
-        or not np.isfinite(samples).all()
-        or np.any(samples < min(a, b))
-        or np.any(samples > max(a, b))
-    ):
-        raise LytroError("Depth has degenerate range, nonfinite/sentinel or out-of-range samples")
-    center: list[dict[str, Any]] = []
+def _center_witness(
+    lfp: LfpContainer, acceleration: dict[str, Any], asset_root: Path | None
+) -> bytes:
     images = acceleration.get("perImage", acceleration.get("imageArray", []))
     if not isinstance(images, list):
         raise LytroError("Processed LFP perImage must be an array")
+    center = []
     for image in images:
         if not isinstance(image, dict):
             raise LytroError("Processed LFP image must be an object")
@@ -490,10 +526,115 @@ def extract_depth(path: Path, *, asset_root: Path | None = None) -> FloatDepth:
         raise LytroError("Processed LFP requires one canonical-center alignment witness")
     if acceleration.get("representation") != "tiff":
         raise LytroError("Processed LFP alignment witness must be TIFF")
-    image_size = (
-        _dimension(acceleration.get("width"), "view width"),
-        _dimension(acceleration.get("height"), "view height"),
-    )
+    return _asset_payload(lfp, center[0], asset_root, MAX_SECTION_BYTES)
+
+
+def _tiff_dimensions(payload: bytes) -> tuple[int, int]:
+    """Measure the actual bounded TIFF raster, not potentially stale LFP dimensions."""
+    import io
+
+    import tifffile
+
+    from .images import require_lossless_tiff
+
+    try:
+        with tifffile.TiffFile(io.BytesIO(payload)) as image:
+            if len(image.pages) != 1:
+                raise LytroError("EDOF witness must contain exactly one TIFF image")
+            page = image.pages[0]
+            if not isinstance(page, tifffile.TiffPage):
+                raise LytroError("EDOF witness must contain a complete TIFF page")
+            require_lossless_tiff(page)
+            width = _dimension(page.imagewidth, "EDOF TIFF width")
+            height = _dimension(page.imagelength, "EDOF TIFF height")
+            if width * height > MAX_PIXELS:
+                raise LytroError("EDOF TIFF dimensions exceed the 16-Mpixel bound")
+            return width, height
+    except (OSError, ValueError, tifffile.TiffFileError) as exc:
+        raise LytroError(f"Invalid EDOF TIFF witness: {exc}") from exc
+
+
+def extract_edof(path: Path, *, asset_root: Path | None = None) -> EdofImage:
+    """Read the canonical EDOF TIFF independently of depth or recipe roles."""
+    lfp = read_lfp(path)
+    matches = [
+        (view, acceleration)
+        for view, acceleration in _accelerations(lfp)
+        if acceleration.get("kind", acceleration.get("type")) == "edofWarp"
+    ]
+    if len(matches) != 1:
+        raise LytroError("LFP must contain exactly one EDOF acceleration")
+    view, acceleration = matches[0]
+    payload = _center_witness(lfp, acceleration, asset_root)
+    return EdofImage(payload, _tiff_dimensions(payload), view)
+
+
+def extract_depth(
+    path: Path,
+    *,
+    asset_root: Path | None = None,
+    exported_stack: bool = False,
+    require_witness: bool = True,
+    measure_witness: bool = False,
+) -> FloatDepth:
+    lfp = read_lfp(path)
+    matches = [
+        (view, acceleration)
+        for view, acceleration in _accelerations(lfp)
+        if "depthMap" in acceleration
+    ]
+    if len(matches) != 1:
+        raise LytroError("Processed LFP must contain exactly one depth-bearing view acceleration")
+    view, acceleration = matches[0]
+    if acceleration.get("kind", acceleration.get("type")) != "edofWarp":
+        raise LytroError("Only TNT edofWarp depth is admitted")
+    descriptor = acceleration["depthMap"]
+    if not isinstance(descriptor, dict) or descriptor.get("representation") not in (
+        {"packedFloat", "pngEncodedByte"} if exported_stack else {"packedFloat"}
+    ):
+        raise LytroError(
+            "TNT depth must explicitly declare packedFloat"
+            + (" or pngEncodedByte" if exported_stack else "")
+        )
+    width = _dimension(descriptor.get("width"), "depth width")
+    height = _dimension(descriptor.get("height"), "depth height")
+    if width * height > MAX_PIXELS:
+        raise LytroError("Depth dimensions exceed the 16-Mpixel bound")
+    a = _number(descriptor.get("minLambda"), "depth minLambda")
+    b = _number(descriptor.get("maxLambda"), "depth maxLambda")
+    if descriptor.get("representation") == "pngEncodedByte":
+        import io
+
+        from PIL import Image
+
+        payload = _asset_payload(lfp, descriptor, asset_root, MAX_SECTION_BYTES)
+        with Image.open(io.BytesIO(payload)) as image:
+            if image.format != "PNG" or image.mode != "L" or image.size != (width, height):
+                raise LytroError("Exported depth must be an 8-bit grayscale PNG of declared size")
+            codes = np.asarray(image).copy()
+        samples = (a + codes.astype(np.float64) * (b - a) / 255).astype(np.float32)
+    else:
+        payload = _asset_payload(lfp, descriptor, asset_root, width * height * 4)
+        if len(payload) != width * height * 4:
+            raise LytroError("packedFloat depth extent is not width × height × 4")
+        samples = np.frombuffer(payload, dtype="<f4").reshape(height, width).copy()
+    if (
+        a == b
+        or not np.isfinite(samples).all()
+        or np.any(samples < min(a, b))
+        or np.any(samples > max(a, b))
+    ):
+        raise LytroError("Depth has degenerate range, nonfinite/sentinel or out-of-range samples")
+    witness = _center_witness(lfp, acceleration, asset_root) if require_witness else b""
+    if measure_witness:
+        if not require_witness:
+            raise LytroError("Measuring depth alignment dimensions requires a TIFF witness")
+        image_size = _tiff_dimensions(witness)
+    else:
+        image_size = (
+            _dimension(acceleration.get("width"), "view width"),
+            _dimension(acceleration.get("height"), "view height"),
+        )
     mapping = descriptor.get("mapToImage")
     if mapping is not None and not isinstance(mapping, dict):
         raise LytroError("Malformed depth mapToImage")
@@ -506,9 +647,10 @@ def extract_depth(path: Path, *, asset_root: Path | None = None) -> FloatDepth:
         mapping,
         view,
         descriptor,
-        _asset_payload(lfp, center[0], asset_root, MAX_SECTION_BYTES),
+        witness,
         (0.0, 0.0),
         image_size,
+        exported_stack,
     )
 
 
@@ -526,17 +668,21 @@ def quantize_depth(depth: FloatDepth) -> NDArray[np.uint16]:
 
 
 def validate_alignment(depth: FloatDepth, resolved: Any, color_size: tuple[int, int]) -> None:
-    """Admit only the probed F01 canonical-center, full-frame depth geometry.
+    """Check F01 canonical-center or matching native baked depth geometry.
 
-    TNT's F01 ComputeOutputDepthMap center route is a full-frame ScaleSignal
-    operation. At zero viewpoint no depth reprojection/pivot warp is applied.
-    The native depth raster is preserved; an AVIF auxiliary may be lower-res.
+    A paired TIFF supplies an image-extent witness. A depth-only role instead
+    requires matching effective geometry and normalized mapping/aspect; those
+    checks establish metadata consistency, not physical pixel correspondence.
     """
     if resolved.center.get("viewPerspectiveU") != 0 or resolved.center.get("viewPerspectiveV") != 0:
         raise LytroError("Depth alignment is validated only for center perspective U=V=0")
-    if color_size != depth.image_size:
+    # A depth-only role need not carry a color witness. TNT can retain stale
+    # acceleration dimensions after crop; its native baked recipe is checked below.
+    if depth.witness_image and color_size != depth.image_size:
         raise LytroError("Rendered view does not match its TNT alignment witness dimensions")
-    if (depth.width, depth.height) != (330, 330) or depth.image_size != (1134, 1134):
+    if not depth.exported_stack and (
+        (depth.width, depth.height) != (330, 330) or depth.image_size != (1134, 1134)
+    ):
         raise LytroError("Admitted F01 depth alignment is 330² depth with a 1134² full-frame view")
     if depth.map_to_image is not None:
         expected = {
@@ -546,11 +692,16 @@ def validate_alignment(depth: FloatDepth, resolved: Any, color_size: tuple[int, 
         }
         if depth.map_to_image != expected:
             raise LytroError("Explicit mapToImage differs from the admitted full-frame mapping")
-    recipe = next(
-        (value for key, value in depth.view.items() if re.fullmatch(r"recipe\d*", key)), None
-    )
-    if not isinstance(recipe, dict):
-        raise LytroError("Depth LFP is missing its effective view recipe")
+    candidates = [value for key, value in depth.view.items() if re.fullmatch(r"recipe\d*", key)]
+    if len(candidates) != 1 or not isinstance(candidates[0], dict):
+        raise LytroError("Depth LFP requires exactly one effective view recipe")
+    recipe = candidates[0]
+    if not depth.witness_image and depth.map_to_image is None:
+        # Depth and color are independently rounded native crop rasters. Their
+        # aspect may differ by at most one depth pixel, not an arbitrary stretch.
+        delta = abs(depth.width * color_size[1] - depth.height * color_size[0])
+        if delta > max(color_size):
+            raise LytroError("Depth-only raster aspect needs an explicit normalized mapToImage")
     keys = (
         "viewFocus",
         "viewAperture",
@@ -567,6 +718,16 @@ def validate_alignment(depth: FloatDepth, resolved: Any, color_size: tuple[int, 
         "viewTiltX",
         "viewTiltY",
     )
+    if depth.exported_stack:
+        keys = (
+            "viewCrop",
+            "viewOrientation",
+            "viewPanX",
+            "viewPanY",
+            "viewZoom",
+            "viewPerspectiveU",
+            "viewPerspectiveV",
+        )
     for key in keys:
         actual, wanted = recipe.get(key), resolved.center.get(key)
         if isinstance(actual, (int, float)) and isinstance(wanted, (int, float)):

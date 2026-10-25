@@ -207,13 +207,27 @@ def test_complete_color_requires_icc_on_every_component() -> None:
     bmff.validate_color(avif, ICC, complete_color=True)
 
 
-def test_assembly_imports_all_components_and_metadata(tmp_path: Path) -> None:
+@pytest.mark.parametrize("different_center", [False, True])
+def test_assembly_imports_all_components_and_metadata(
+    tmp_path: Path, different_center: bool
+) -> None:
     from types import SimpleNamespace
 
     paths = [tmp_path / f"{name}.avif" for name in ("center", "left", "right", "depth")]
     for path in paths[:3]:
         path.write_bytes(bmff.serialize(_color()))
     paths[3].write_bytes(bmff.serialize(_depth()))
+    center_icc = ICC
+    if different_center:
+        center_icc = b"different original center ICC"
+        graph = _color()
+        index = next(
+            i
+            for i, prop in enumerate(graph.properties)
+            if prop.raw == _property(b"colr", b"prof" + ICC)
+        )
+        graph.properties[index] = bmff.Property(b"colr", _property(b"colr", b"prof" + center_icc))
+        paths[0].write_bytes(bmff.serialize(graph))
     spatial = SimpleNamespace(
         cmin=bmff.full_box(b"cmin", bytes(12)),
         cmex_left=bmff.full_box(b"cmex", bytes(18)),
@@ -228,9 +242,12 @@ def test_assembly_imports_all_components_and_metadata(tmp_path: Path) -> None:
         spatial=spatial,
     )
     output = tmp_path / "final.avif"
-    result = bmff.assemble(*paths, metadata, output)
+    if different_center:
+        with pytest.raises(bmff.ContainerError, match="color interpretations"):
+            bmff.assemble(*paths, metadata, output)
+    result = bmff.assemble(*paths, metadata, output, separate_center_profile=different_center)
     final = bmff.read(output)
-    bmff.validate_final(final, result, ICC)
+    bmff.validate_final(final, result, (center_icc, ICC, ICC))
     assert len(final.items) == 14
     assert len(final.groups) == 4
     assert result.depth.item == 10
@@ -240,7 +257,7 @@ def test_assembly_imports_all_components_and_metadata(tmp_path: Path) -> None:
     assert [r.targets for r in final.references if r.kind == b"auxl"] == [(1, 2)]
     for roles in (result.center, result.left, result.right):
         for item in (roles.base, roles.suffix, roles.sato):
-            assert bmff.icc_profile(final, item) == ICC
+            assert bmff.icc_profile(final, item) == (center_icc if roles == result.center else ICC)
 
 
 def _low4_leaf() -> bmff.Avif:

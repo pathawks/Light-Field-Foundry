@@ -22,7 +22,10 @@ from .errors import LytroError
 type U16 = npt.NDArray[np.uint16]
 MAX_PIXELS = 64_000_000
 MAX_ICC = 16 * 1024 * 1024
-COLOR_TAGS = (262, 274, 301, 318, 319, 338, 339, 342, 529, 532, 34675)
+COLOR_TAGS = (259, 262, 274, 301, 318, 319, 338, 339, 342, 529, 532, 34675)
+# Only codecs that are inherently lossless. TIFF JPEG-family, WebP and JPEG-XL
+# tags can describe lossy data; decoding them cannot establish source precision.
+LOSSLESS_TIFF_COMPRESSION = frozenset({1, 5, 8, 32773, 32946, 34925, 34926, 50000})
 
 
 @dataclass(frozen=True)
@@ -75,7 +78,17 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def read_tiff(path: Path) -> RGB16:
+def require_lossless_tiff(page: tifffile.TiffPage) -> None:
+    """Reject ambiguous/lossy compression before decoding any TIFF samples."""
+    compression = int(page.compression)
+    if compression not in LOSSLESS_TIFF_COMPRESSION:
+        name = getattr(page.compression, "name", str(compression))
+        raise LytroError(
+            f"TIFF compression {name} ({compression}) is not an admitted lossless encoding."
+        )
+
+
+def read_tiff(path: Path, *, allow_black_coverage: bool = False) -> RGB16:
     try:
         with tifffile.TiffFile(path) as tiff:
             if len(tiff.pages) != 1:
@@ -83,6 +96,7 @@ def read_tiff(path: Path) -> RGB16:
             page = tiff.pages[0]
             if not isinstance(page, tifffile.TiffPage):
                 raise LytroError("TIFF must contain a complete image page.")
+            require_lossless_tiff(page)
             if page.imagewidth * page.imagelength > MAX_PIXELS:
                 raise LytroError("TIFF exceeds the supported pixel limit.")
             if page.dtype != np.dtype("uint16") or page.bitspersample != 16:
@@ -106,7 +120,14 @@ def read_tiff(path: Path) -> RGB16:
                 ):
                     raise LytroError("Unspecified TIFF extra-channel interpretation.")
                 if not np.all(pixels[:, :, 3] == 65535):
-                    raise LytroError("Nonopaque TIFF alpha is not supported by this route.")
+                    mask = pixels[:, :, 3]
+                    if not (
+                        allow_black_coverage
+                        and not page.extrasamples
+                        and np.all((mask == 0) | (mask == 65535))
+                        and np.all(pixels[:, :, :3][mask == 0] == 0)
+                    ):
+                        raise LytroError("Nonopaque TIFF alpha is not supported by this route.")
                 pixels = pixels[:, :, :3]
             elif page.extrasamples:
                 raise LytroError("Unexpected TIFF extra samples.")
@@ -120,6 +141,11 @@ def read_tiff(path: Path) -> RGB16:
                 for code in COLOR_TAGS
                 if (tag := page.tags.get(code)) is not None
             }
+            if allow_black_coverage and page.samplesperpixel == 4:
+                tags["coverage"] = {
+                    "policy": "binary undeclared TNT coverage baked onto black; RGB samples unchanged",
+                    "black_pixels": int(np.count_nonzero(page.asarray()[:, :, 3] == 0)),
+                }
             # A nonidentity TransferFunction contradicts already ICC-described rendered codes.
             # Keep all original color tags in provenance; reject conflicts we cannot resolve.
             conflicting = {code for code in (301, 318, 319, 342, 529, 532) if code in page.tags}
@@ -191,8 +217,13 @@ def read_png(path: Path) -> tuple[U16, bytes | None]:
         raise LytroError(f"Invalid PNG: {exc}") from exc
 
 
-def matching_views(views: list[RGB16]) -> None:
+def matching_views(views: list[RGB16], *, separate_center_profile: bool = False) -> None:
     first = views[0]
     for view in views[1:]:
-        if view.pixels.shape != first.pixels.shape or view.icc != first.icc:
+        if view.pixels.shape != first.pixels.shape or (
+            not separate_center_profile and view.icc != first.icc
+        ):
             raise LytroError("TNT views have mismatched geometry or ICC profiles.")
+
+    if separate_center_profile and views[1].icc != views[2].icc:
+        raise LytroError("Stereo eyes have mismatched ICC profiles.")

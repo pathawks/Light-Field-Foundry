@@ -291,3 +291,238 @@ def test_no_observed_minmax_stretch() -> None:
         np.array([[1, 2]], dtype=np.float32), 2, 1, 0, 3, None, {}, {}, b"", (0, 0), (2, 1)
     )
     np.testing.assert_array_equal(quantize_depth(depth), [[2730, 1365]])
+
+
+def test_exported_png_depth_retains_original_codes_and_declared_range(tmp_path: Path) -> None:
+    from PIL import Image
+
+    codes = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    Image.fromarray(codes).save(tmp_path / "depth.png")
+    (tmp_path / "center.tiff").write_bytes(b"original tiff witness")
+    master = {
+        "views": [
+            {
+                "recipe": {"viewOrientation": 1},
+                "accelerations": [
+                    {
+                        "kind": "edofWarp",
+                        "width": 53,
+                        "height": 53,
+                        "representation": "tiff",
+                        "depthMap": {
+                            "width": 16,
+                            "height": 16,
+                            "representation": "pngEncodedByte",
+                            "minLambda": -20,
+                            "maxLambda": 31,
+                            "imagePath": "depth.png",
+                        },
+                        "perImage": [{"perspective": {"u": 0, "v": 0}, "imagePath": "center.tiff"}],
+                    }
+                ],
+            }
+        ]
+    }
+    path = _container(tmp_path / "stack.lfp", json.dumps(master).encode())
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(LytroError, match="packedFloat"):
+        extract_depth(path, asset_root=tmp_path)
+    depth = extract_depth(path, asset_root=tmp_path, exported_stack=True)
+    assert depth.exported_stack
+    assert depth.image_size == (53, 53)
+    np.testing.assert_array_equal(
+        quantize_depth(depth), np.rint((255 - codes.astype(float)) * 4095 / 255)
+    )
+    assert "8-bit precision" in depth.mapping_provenance["source"]
+    assert before == {p: p.read_bytes() for p in tmp_path.iterdir()}
+    Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8)).save(tmp_path / "depth.png")
+    with pytest.raises(LytroError, match="grayscale"):
+        extract_depth(path, asset_root=tmp_path, exported_stack=True)
+
+
+def test_role_capture_reference_requires_one_valid_capture_identity(tmp_path: Path) -> None:
+    from lytro_avif.lfp import capture_reference
+
+    reference = _reference(b"original raw is external")
+    frame = {"frame": {"imageRef": reference}}
+    lfp = read_lfp(_container(tmp_path / "identity.lfp", json.dumps({"frames": [frame]}).encode()))
+    assert capture_reference(lfp) == reference
+    assert reference not in lfp.sections
+    for frames in ([], [frame, frame], [{"frame": []}], [{"frame": {"imageRef": "wrong"}}]):
+        invalid = read_lfp(
+            _container(tmp_path / "invalid.lfp", json.dumps({"frames": frames}).encode())
+        )
+        with pytest.raises(LytroError, match="exactly one capture"):
+            capture_reference(invalid)
+
+
+def test_recipe_role_needs_no_depth_or_images_and_rejects_ambiguity(tmp_path: Path) -> None:
+    from lytro_avif.lfp import extract_recipe, has_edof
+
+    recipe = {"viewFocus": 2, "viewFocusSpread": 25, "viewCrop": {"angle": -2}}
+    master = {"views": [{"recipe4": recipe}]}
+    lfp = read_lfp(_container(tmp_path / "recipe.lfp", json.dumps(master).encode()))
+    assert extract_recipe(lfp) == recipe
+    assert not has_edof(lfp)
+    master["views"][0]["recipe5"] = {"viewFocus": 9}
+    ambiguous = read_lfp(_container(tmp_path / "ambiguous.lfp", json.dumps(master).encode()))
+    with pytest.raises(LytroError, match="exactly one saved recipe"):
+        extract_recipe(ambiguous)
+
+
+def test_edof_role_needs_no_depth_and_measures_actual_tiff_dimensions(tmp_path: Path) -> None:
+    import io
+
+    import tifffile
+
+    from lytro_avif.lfp import extract_edof, has_edof
+
+    stream = io.BytesIO()
+    tifffile.imwrite(stream, np.zeros((2, 3, 3), dtype=np.uint16), photometric="rgb", metadata=None)
+    witness = stream.getvalue()
+    acceleration = {
+        "kind": "edofWarp",
+        "representation": "tiff",
+        "width": 1134,
+        "height": 1134,
+        "perImage": [{"perspective": {"u": 0, "v": 0}, "imageRef": _reference(witness)}],
+    }
+    master = {"views": [{"accelerations": [acceleration]}]}
+    path = _container(tmp_path / "edof-only.lfp", json.dumps(master).encode(), witness)
+    before = path.read_bytes()
+    assert has_edof(read_lfp(path))
+    result = extract_edof(path)
+    assert result.image_size == (3, 2)
+    assert result.witness_image == witness
+    assert path.read_bytes() == before
+    with pytest.raises(LytroError, match="depth-bearing"):
+        extract_depth(path)
+    master["views"][0]["accelerations"].append(acceleration)
+    duplicate = _container(tmp_path / "duplicate.lfp", json.dumps(master).encode(), witness)
+    with pytest.raises(LytroError, match="exactly one EDOF"):
+        extract_edof(duplicate)
+
+
+def test_depth_role_can_omit_all_color_assets(tmp_path: Path) -> None:
+    payload = np.arange(4, dtype="<f4").reshape(2, 2).tobytes()
+    descriptor = {
+        "width": 2,
+        "height": 2,
+        "representation": "packedFloat",
+        "minLambda": 0,
+        "maxLambda": 3,
+        "imageRef": _reference(payload),
+    }
+    master = {
+        "views": [
+            {
+                "accelerations": [
+                    {"kind": "edofWarp", "width": 3, "height": 2, "depthMap": descriptor}
+                ]
+            }
+        ]
+    }
+    path = _container(tmp_path / "depth-only.lfp", json.dumps(master).encode(), payload)
+    before = path.read_bytes()
+    depth = extract_depth(path, require_witness=False)
+    np.testing.assert_array_equal(depth.samples, [[0, 1], [2, 3]])
+    assert depth.witness_image == b""
+    assert depth.image_size == (3, 2)
+    assert path.read_bytes() == before
+    with pytest.raises(LytroError, match="canonical-center"):
+        extract_depth(path)
+    with pytest.raises(LytroError, match="requires a TIFF witness"):
+        extract_depth(path, require_witness=False, measure_witness=True)
+
+
+def test_measured_depth_witness_overrides_stale_generated_acceleration_dimensions(
+    tmp_path: Path,
+) -> None:
+    import io
+
+    import tifffile
+
+    stream = io.BytesIO()
+    tifffile.imwrite(stream, np.zeros((2, 3, 3), dtype=np.uint16), photometric="rgb", metadata=None)
+    witness = stream.getvalue()
+    payload = np.arange(4, dtype="<f4").reshape(2, 2).tobytes()
+    descriptor = {
+        "width": 2,
+        "height": 2,
+        "representation": "packedFloat",
+        "minLambda": 0,
+        "maxLambda": 3,
+        "imageRef": _reference(payload),
+    }
+    master = {
+        "views": [
+            {
+                "recipe4": {"viewCrop": {"angle": -2}},
+                "accelerations": [
+                    {
+                        "kind": "edofWarp",
+                        "representation": "tiff",
+                        "width": 1134,
+                        "height": 1134,
+                        "depthMap": descriptor,
+                        "perImage": [
+                            {"perspective": {"u": 0, "v": 0}, "imageRef": _reference(witness)}
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    path = _container(tmp_path / "generated.lfp", json.dumps(master).encode(), payload, witness)
+    assert extract_depth(path).image_size == (1134, 1134)
+    depth = extract_depth(path, measure_witness=True)
+    assert depth.image_size == (3, 2)
+    assert depth.witness_image == witness
+
+
+@pytest.mark.parametrize("compression", [7, 34712, 50001, 50002])
+def test_edof_role_rejects_lossy_or_ambiguous_tiff_compression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compression: int
+) -> None:
+    import io
+
+    import tifffile
+
+    from lytro_avif.lfp import extract_edof
+
+    stream = io.BytesIO()
+    tifffile.imwrite(stream, np.zeros((2, 3, 3), dtype=np.uint16), photometric="rgb", metadata=None)
+    with tifffile.TiffFile(io.BytesIO(stream.getvalue())) as tiff:
+        page = tiff.pages[0]
+        assert isinstance(page, tifffile.TiffPage)
+        offset = page.tags[259].valueoffset
+    witness = bytearray(stream.getvalue())
+    struct.pack_into("<H", witness, offset, compression)
+    payload = bytes(witness)
+    master = {
+        "views": [
+            {
+                "accelerations": [
+                    {
+                        "kind": "edofWarp",
+                        "representation": "tiff",
+                        "width": 3,
+                        "height": 2,
+                        "perImage": [
+                            {"perspective": {"u": 0, "v": 0}, "imageRef": _reference(payload)}
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+    path = _container(tmp_path / "lossy-edof.lfp", json.dumps(master).encode(), payload)
+    before = path.read_bytes()
+
+    def decode(*_args, **_kwargs):
+        raise AssertionError("Rejected EDOF compression reached a pixel decoder")
+
+    monkeypatch.setattr(tifffile.TiffPage, "asarray", decode)
+    with pytest.raises(LytroError, match="lossless encoding"):
+        extract_edof(path)
+    assert path.read_bytes() == before

@@ -74,8 +74,15 @@ def _mock_conversion(
     tools = Tools(executable, executable, executable)
     workdirs: list[Path] = []
     state: dict[str, Any] = {}
-    info = SimpleNamespace(public_json=(b"{}",), private_json=(), master_json=b"{}")
-    monkeypatch.setattr(pipeline, "read_lfp", lambda _: SimpleNamespace(admit_capture=lambda: info))
+    source = SimpleNamespace(path=capture, public_json=(b"{}",), private_json=(), master_json=b"{}")
+    selected = SimpleNamespace(
+        raw=source, metadata=source, recipe=None, depth=None, edof=None, provenance={}
+    )
+    state["sources"] = selected
+    monkeypatch.setattr(pipeline, "select_sources", lambda *_, **__: selected)
+    monkeypatch.setattr(
+        pipeline, "stage_raw", lambda source, target: target.write_bytes(source.path.read_bytes())
+    )
     monkeypatch.setattr(Tools, "capabilities", lambda *_: {"tnt": "TNT fixture"})
     monkeypatch.setattr(
         pipeline,
@@ -107,6 +114,13 @@ def _mock_conversion(
     monkeypatch.setattr(pipeline, "read_tiff", read_tiff)
     depth = SimpleNamespace(mapping_provenance={}, witness_image=b"native EDOF center TIFF")
     monkeypatch.setattr(pipeline, "extract_depth", lambda _, **__: depth)
+    monkeypatch.setattr(
+        pipeline,
+        "extract_edof",
+        lambda _, **__: SimpleNamespace(
+            witness_image=depth.witness_image, view={"recipe": recipe}, image_size=(16, 16)
+        ),
+    )
     monkeypatch.setattr(pipeline, "validate_alignment", lambda *_: None)
     monkeypatch.setattr(pipeline, "quantize_depth", lambda _: np.zeros((16, 16), np.uint16))
 
@@ -238,7 +252,7 @@ def test_refocus_retains_three_raw_still_renders(
     pipeline.convert(replace(options, edof_center=False), tools, lambda _: None)
     commands = state["commands"]
     depth_command = next(args for args in commands if "--lfp-out" in args)
-    assert "--unpack" not in depth_command
+    assert "--unpack" in depth_command  # Native TIFF witnesses measure cropped depth geometry.
     stills = [args for args in commands if "--image-out" in args]
     assert len(stills) == 3
     assert state["center_tiff"] == b"{}"
@@ -328,4 +342,188 @@ def test_invalid_disparity_range_fails_before_rendering(
             replace(options, disparity_min=minimum, disparity_max=maximum), tools, lambda _: None
         )
     assert workdirs == []
+    assert not options.output.exists()
+
+
+@pytest.mark.parametrize("provide_library", [True, False])
+def test_conversion_refuses_publication_inside_read_only_library(
+    tmp_path, monkeypatch, provide_library
+) -> None:
+    options, tools, _, _ = _mock_conversion(tmp_path, monkeypatch)
+    root = tmp_path / "library.lytrolibrary"
+    root.mkdir()
+    alias = tmp_path / "library-alias"
+    alias.symlink_to(root, target_is_directory=True)
+    options = replace(options, library=root if provide_library else None, output=alias / "new.avif")
+    with pytest.raises(LytroError, match="read-only Lytro library"):
+        pipeline.convert(options, tools)
+    assert not list(root.iterdir())
+
+
+@pytest.mark.parametrize("require_existing", [False, True])
+def test_exported_stack_uses_original_center_depth_and_verified_raw_for_eyes(
+    tmp_path, monkeypatch, require_existing
+) -> None:
+    options, tools, _, state = _mock_conversion(tmp_path, monkeypatch)
+    options = replace(
+        options, no_recompute_depth=require_existing, no_recompute_edof=require_existing
+    )
+    selected = state["sources"]
+    stack = SimpleNamespace(
+        path=options.capture,
+        public_json=(b'{"exported":true}',),
+        private_json=(),
+        master_json=b'{"stack":true}',
+    )
+    selected.recipe = selected.depth = selected.edof = stack
+    monkeypatch.setattr(pipeline, "extract_recipe", lambda _: {"viewFocusSpread": 25})
+    monkeypatch.setattr(pipeline, "_check_cached_edof", lambda *_: None)
+    depth = SimpleNamespace(
+        mapping_provenance={"source": "original 8-bit depth"},
+        witness_image=b"",
+        image_size=(16, 16),
+    )
+    monkeypatch.setattr(pipeline, "extract_depth", lambda *_, **__: depth)
+    edof = SimpleNamespace(witness_image=b"original exported center TIFF", view={})
+    monkeypatch.setattr(pipeline, "extract_edof", lambda *_, **__: edof)
+    original_tiff = pipeline.read_tiff
+    monkeypatch.setattr(pipeline, "read_tiff", lambda p, **_: original_tiff(p))
+    original_assemble = pipeline.bmff.assemble
+    flags = []
+
+    def assemble(*args, **kwargs):
+        flags.append(kwargs)
+        return original_assemble(*args)
+
+    monkeypatch.setattr(pipeline.bmff, "assemble", assemble)
+    metadata = []
+    monkeypatch.setattr(
+        pipeline, "build_metadata", lambda *args, **kwargs: metadata.append((args, kwargs))
+    )
+    pipeline.convert(options, tools, lambda _: None)
+    assert state["center_tiff"] == b"original exported center TIFF"
+    commands = state["commands"]
+    assert not any("--lfp-out" in command for command in commands)
+    eyes = [command for command in commands if "--image-out" in command]
+    assert len(eyes) == 2
+    assert all(
+        Path(command[command.index("--lfp-in") + 1]).name == "raw-input.lfp" for command in eyes
+    )
+    assert flags == [{"separate_center_profile": True}]
+    assert metadata[0][0][0] == selected.raw.public_json
+    assert metadata[0][1]["master_json"] == selected.metadata.master_json
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"recompute_depth": True, "no_recompute_depth": True},
+        {"recompute_edof": True, "no_recompute_edof": True},
+        {"edof_center": False, "no_recompute_edof": True},
+    ],
+)
+def test_invalid_recompute_policy_fails_before_any_processing(tmp_path, monkeypatch, kwargs):
+    options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
+
+    def unexpected(*_, **__):
+        pytest.fail("Invalid policy reached source discovery or native processing")
+
+    monkeypatch.setattr(pipeline, "select_sources", unexpected)
+    monkeypatch.setattr(pipeline, "doctor", unexpected)
+    with pytest.raises(LytroError, match="no-recompute"):
+        pipeline.convert(replace(options, **kwargs), tools)
+    assert not workdirs and not state.get("commands")
+    assert not options.output.exists()
+
+
+@pytest.mark.parametrize(
+    "kwargs,flag",
+    [
+        ({"no_recompute_depth": True}, "--no-recompute-depth"),
+        ({"no_recompute_edof": True}, "--no-recompute-edof"),
+        ({"no_recompute_depth": True, "no_recompute_edof": True}, "--no-recompute-depth"),
+    ],
+)
+def test_required_missing_cache_fails_before_doctor_or_native(tmp_path, monkeypatch, kwargs, flag):
+    options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
+
+    def unexpected(*_, **__):
+        pytest.fail("Missing required cache reached native processing")
+
+    monkeypatch.setattr(pipeline, "doctor", unexpected)
+    with pytest.raises(LytroError, match=flag):
+        pipeline.convert(replace(options, **kwargs), tools)
+    assert not workdirs and not state.get("commands")
+    assert not options.output.exists()
+
+
+@pytest.mark.parametrize("role", ["depth", "edof"])
+def test_unusable_required_cache_never_falls_back_to_recomputation(tmp_path, monkeypatch, role):
+    options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
+    selected = state["sources"]
+    setattr(selected, role, SimpleNamespace(path=options.capture))
+
+    def unusable(*_, **__):
+        raise LytroError("Selected cache is not a lossless supported encoding")
+
+    monkeypatch.setattr(pipeline, "extract_" + role, unusable)
+
+    def unexpected(*_, **__):
+        pytest.fail("Unusable required cache reached native processing")
+
+    monkeypatch.setattr(pipeline, "doctor", unexpected)
+    with pytest.raises(LytroError, match="lossless"):
+        pipeline.convert(replace(options, **{"no_recompute_" + role: True}), tools)
+    assert not workdirs and not state.get("commands")
+    assert not options.output.exists()
+
+
+@pytest.mark.parametrize("role", ["depth", "edof"])
+def test_required_cache_can_be_combined_with_other_automatic_role(tmp_path, monkeypatch, role):
+    options, tools, _, state = _mock_conversion(tmp_path, monkeypatch)
+    selected = state["sources"]
+    setattr(selected, role, SimpleNamespace(path=options.capture))
+    if role == "depth":
+        cached_depth = SimpleNamespace(
+            mapping_provenance={}, witness_image=b"", image_size=(16, 16)
+        )
+        monkeypatch.setattr(pipeline, "extract_depth", lambda *_, **__: cached_depth)
+    original_reader = pipeline.read_tiff
+    monkeypatch.setattr(pipeline, "read_tiff", lambda path, **_: original_reader(path))
+    original_assemble = pipeline.bmff.assemble
+    monkeypatch.setattr(pipeline.bmff, "assemble", lambda *args, **_: original_assemble(*args))
+    pipeline.convert(replace(options, **{"no_recompute_" + role: True}), tools, lambda _: None)
+    commands = state["commands"]
+    assert sum("--lfp-out" in command for command in commands) == 1
+    assert sum("--image-out" in command for command in commands) == 2
+    assert options.output.exists()
+
+
+@pytest.mark.parametrize("failure", ["depth-geometry", "edof-finishing", "edof-color"])
+def test_required_cache_late_validation_failure_prevents_other_role_generation(
+    tmp_path, monkeypatch, failure
+):
+    options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
+    selected = state["sources"]
+    role = "depth" if failure == "depth-geometry" else "edof"
+    setattr(selected, role, SimpleNamespace(path=options.capture))
+
+    def mismatch(*_, **__):
+        raise LytroError("Required cached asset has incompatible data")
+
+    if failure == "depth-geometry":
+        cached = SimpleNamespace(mapping_provenance={}, witness_image=b"", image_size=(16, 16))
+        monkeypatch.setattr(pipeline, "extract_depth", lambda *_, **__: cached)
+        monkeypatch.setattr(pipeline, "validate_alignment", mismatch)
+    elif failure == "edof-finishing":
+        monkeypatch.setattr(pipeline, "_check_cached_edof", mismatch)
+    else:
+        monkeypatch.setattr(pipeline, "read_tiff", mismatch)
+    with pytest.raises(LytroError, match="incompatible data"):
+        pipeline.convert(replace(options, **{"no_recompute_" + role: True}), tools, lambda _: None)
+    assert state["commands"]  # Recipe resolution occurred; no photo was generated.
+    assert all(
+        "--lfp-out" not in command and "--image-out" not in command for command in state["commands"]
+    )
+    assert all(not directory.exists() for directory in workdirs)
     assert not options.output.exists()

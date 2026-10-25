@@ -61,7 +61,11 @@ class ResolvedRecipe:
                 "focus_and_aperture_applied": not self.edof_center,
                 "meaning": "EDOF uses the native all-in-focus stack center; focus/aperture remain stereo-eye controls",
             },
-            "geometry_scope": "F01 upright full-frame canonical center",
+            "geometry_scope": {
+                "center": "F01 canonical center",
+                "crop": self.center["viewCrop"],
+                "orientation": self.center["viewOrientation"],
+            },
             "eye_order": "left=U-B/2; right=U+B/2; manual scene acceptance pending",
         }
 
@@ -111,6 +115,7 @@ def resolve_recipe(
     stereo_pivot: float | None = None,
     aperture: float | None = None,
     edof_center: bool = True,
+    saved_stack: bool = False,
 ) -> ResolvedRecipe:
     """CLI controls override requested recipe, then TNT's exported source recipe.
 
@@ -127,6 +132,8 @@ def resolve_recipe(
         )
     recipe = copy.deepcopy(source)
     recipe.update(copy.deepcopy(requested))
+    if saved_stack:
+        recipe = {key: value for key, value in recipe.items() if not key.endswith("Animation")}
     for key, value in recipe.items():
         if key.endswith("Animation") and (
             not isinstance(value, dict)
@@ -134,11 +141,24 @@ def resolve_recipe(
         ):
             raise LytroError(f"Animated recipes are not admitted: {key}")
     for key, expected in GEOMETRY.items():
+        if saved_stack and key in {"viewCrop", "viewFocusSpread"}:
+            continue
         if recipe.get(key, expected) != expected:
             raise LytroError(
                 f"Unsupported saved geometry {key}; only upright full-frame center is validated"
             )
         recipe[key] = copy.deepcopy(expected)
+    if saved_stack:
+        recipe.setdefault("viewFocusSpread", 0)
+        crop = recipe.get("viewCrop")
+        if not isinstance(crop, dict) or set(crop) != set(FULL_CROP):
+            raise LytroError("Saved crop must declare angle/top/left/bottom/right")
+        values = {key: _finite(value, "crop " + key) for key, value in crop.items()}
+        if not (values["top"] < values["bottom"] and values["left"] < values["right"]):
+            raise LytroError("Saved crop must have ordered, nonempty extents")
+        spread = _finite(recipe.get("viewFocusSpread", 0), "focus spread")
+        if spread < 0:
+            raise LytroError("Focus spread must be nonnegative")
     u = _finite(perspective_u, "perspective U")
     v = _finite(perspective_v, "perspective V")
     separation = _finite(baseline, "baseline")
@@ -155,8 +175,11 @@ def resolve_recipe(
     resolved_aperture = _finite(
         aperture if aperture is not None else recipe.get("viewAperture"), "aperture"
     )
-    if not 0 <= resolved_aperture <= 1:
-        raise LytroError("Aperture must be within the admitted normalized range 0..1")
+    aperture_limit = 2 if saved_stack else 1
+    if not 0 <= resolved_aperture <= aperture_limit:
+        raise LytroError(
+            f"Aperture must be within the admitted normalized range 0..{aperture_limit}"
+        )
     recipe.update(
         {
             "viewFocus": resolved_focus,

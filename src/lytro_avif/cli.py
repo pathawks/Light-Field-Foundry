@@ -21,7 +21,7 @@ from .pipeline import doctor as run_doctor
 from .tools import Tools
 
 app = typer.Typer(
-    no_args_is_help=True, help="Export TNT-rendered RGB16 stereo + depth to one AVIF."
+    no_args_is_help=True, help="Tools for working with Lytro captures and image exports."
 )
 console = Console(highlight=False)
 
@@ -48,16 +48,119 @@ def _doctor(tools: Tools) -> None:
         console.print(f"{name}: {value}", markup=False)
 
 
-@app.command(no_args_is_help=True)
-def main(
+@app.callback()
+def root(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version", callback=_show_version, is_eager=True, help="Show application version."
+        ),
+    ] = False,
+) -> None:
+    """Lytro capture and image tools."""
+
+
+@app.command("doctor", no_args_is_help=False)
+def doctor_command(
+    avifenc: Annotated[Path | None, typer.Option(help="Explicit avifenc executable.")] = None,
+    avifdec: Annotated[Path | None, typer.Option(help="Explicit avifdec executable.")] = None,
+    threads: Annotated[int, typer.Option(min=1, max=32)] = 4,
+    timeout: Annotated[float, typer.Option(min=1, max=86400, help="Per-process seconds.")] = 600,
+) -> None:
+    """Check tools and codec/native contracts without processing a capture."""
+    try:
+        _doctor(Tools.discover(avifenc, avifdec, threads, timeout))
+    except (LytroError, OSError, ValueError) as exc:
+        console.print(f"Error: {exc}", style="red", markup=False)
+        raise typer.Exit(1) from None
+    except (KeyboardInterrupt, InterruptedError):
+        console.print("Interrupted; current-run temporary files removed.", markup=False)
+        raise typer.Exit(130) from None
+
+
+@app.command("image-out", no_args_is_help=True)
+def image_out(
     capture: Annotated[
-        Path | None, typer.Argument(help="Raw .lfr or raw-containing .lfp capture.")
+        Path | None,
+        typer.Argument(
+            help="Optional shorthand LFP input; explicit --lfp-* roles take precedence."
+        ),
     ] = None,
+    lfp_raw: Annotated[
+        Path | None,
+        typer.Option(help="Raw-containing .lfp/.lfr; used directly without a library database."),
+    ] = None,
+    lfp_recipe: Annotated[
+        Path | None,
+        typer.Option(
+            "--lfp-recipe", "--lfp-receipe", help="LFP containing the saved static recipe."
+        ),
+    ] = None,
+    lfp_depth: Annotated[
+        Path | None,
+        typer.Option(help="LFP containing existing depth; --recompute-depth ignores this cache."),
+    ] = None,
+    lfp_edof: Annotated[
+        Path | None,
+        typer.Option(help="LFP supplying an EDOF center; --recompute-edof ignores this cache."),
+    ] = None,
+    recompute_depth: Annotated[
+        bool,
+        typer.Option(
+            "--recompute-depth",
+            help="Ignore pre-existing depth and compute fresh depth with TNT.",
+            show_default=False,
+        ),
+    ] = False,
+    recompute_edof: Annotated[
+        bool,
+        typer.Option(
+            "--recompute-edof",
+            help="Ignore pre-existing EDOF images and compute a fresh EDOF center with TNT.",
+            show_default=False,
+        ),
+    ] = False,
+    recompute: Annotated[
+        bool,
+        typer.Option(
+            "--recompute",
+            help="Recompute both depth and EDOF with TNT, ignoring their existing caches.",
+            show_default=False,
+        ),
+    ] = False,
+    no_recompute_depth: Annotated[
+        bool,
+        typer.Option(
+            "--no-recompute-depth",
+            help="Require existing matching lossless depth; fail instead of generating it.",
+            show_default=False,
+        ),
+    ] = False,
+    no_recompute_edof: Annotated[
+        bool,
+        typer.Option(
+            "--no-recompute-edof",
+            help="Require an existing matching lossless EDOF center; fail instead of generating it.",
+            show_default=False,
+        ),
+    ] = False,
+    no_recompute: Annotated[
+        bool,
+        typer.Option(
+            "--no-recompute",
+            help="Require matching lossless depth and EDOF caches; stereo eyes are still rendered.",
+            show_default=False,
+        ),
+    ] = False,
     calibration: Annotated[
         Path | None,
         typer.Option(
-            help="Matching calibration root (parent of camera serial folders); required for export."
+            help="Calibration root (parent of camera serial folders); required without --library."
         ),
+    ] = None,
+    library: Annotated[
+        Path | None,
+        typer.Option(help="Read-only .lytrolibrary fallback for raw lookup and calibration."),
     ] = None,
     output: Annotated[
         Path | None,
@@ -104,7 +207,10 @@ def main(
         ),
     ] = None,
     recipe: Annotated[
-        Path | None, typer.Option(help="Saved static recipe; CLI controls take precedence.")
+        Path | None,
+        typer.Option(
+            help="JSON recipe overrides; applied after --lfp-recipe, before explicit CLI controls."
+        ),
     ] = None,
     include_private_metadata: Annotated[
         bool, typer.Option(help="Explicitly embed original private JSON, including identifiers.")
@@ -120,66 +226,50 @@ def main(
     avifdec: Annotated[Path | None, typer.Option(help="Explicit avifdec executable.")] = None,
     threads: Annotated[int, typer.Option(min=1, max=32)] = 4,
     timeout: Annotated[float, typer.Option(min=1, max=86400, help="Per-process seconds.")] = 600,
-    doctor: Annotated[
-        bool,
-        typer.Option(
-            "--doctor", help="Check tools and codec/native contracts without exporting a capture."
-        ),
-    ] = False,
-    version: Annotated[
-        bool,
-        typer.Option(
-            "--version", callback=_show_version, is_eager=True, help="Show application version."
-        ),
-    ] = False,
 ) -> None:
-    """Render and verify CAPTURE; retain only the completed AVIF."""
-    if doctor:
-        if (
-            include_private_metadata
-            or not edof_center
-            or any(
-                value is not None
-                for value in (
-                    capture,
-                    calibration,
-                    output,
-                    perspective_u,
-                    perspective_v,
-                    baseline,
-                    focus,
-                    stereo_pivot,
-                    aperture,
-                    disparity_min,
-                    disparity_max,
-                    recipe,
-                )
-            )
-        ):
-            raise typer.BadParameter(
-                "--doctor cannot be combined with a capture or export options."
-            )
-    else:
-        required = {
-            "CAPTURE": capture,
-            "--calibration": calibration,
-            "--output": output,
-            "--perspective-u": perspective_u,
-            "--perspective-v": perspective_v,
-            "--baseline": baseline,
-        }
-        missing = [name for name, value in required.items() if value is None]
-        if missing:
-            raise typer.BadParameter("Required for export: " + ", ".join(missing))
+    """Render and verify selected LFP sources; retain only the completed AVIF."""
+    force_depth = recompute_depth or recompute
+    force_edof = recompute_edof or recompute
+    require_depth = no_recompute_depth or no_recompute
+    require_edof = no_recompute_edof or no_recompute
+    if force_depth and require_depth:
+        raise typer.BadParameter(
+            "Depth recomputation options cannot be combined: --recompute-depth/--recompute "
+            "and --no-recompute-depth/--no-recompute."
+        )
+    if force_edof and require_edof:
+        raise typer.BadParameter(
+            "EDOF recomputation options cannot be combined: --recompute-edof/--recompute "
+            "and --no-recompute-edof/--no-recompute."
+        )
+    if require_edof and not edof_center:
+        raise typer.BadParameter(
+            "--no-recompute-edof/--no-recompute requires an EDOF primary and cannot be "
+            "combined with --refocus."
+        )
+    if calibration is None and library is not None:
+        calibration = library.expanduser() / "cameras"
+    required = {
+        "CAPTURE or an --lfp-* input": capture
+        or lfp_raw
+        or lfp_recipe
+        or lfp_depth
+        or lfp_edof,
+        "--calibration": calibration,
+        "--output": output,
+        "--perspective-u": perspective_u,
+        "--perspective-v": perspective_v,
+        "--baseline": baseline,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        raise typer.BadParameter("Required for export: " + ", ".join(missing))
     try:
         minimum = DEFAULT_DISPARITY_MIN if disparity_min is None else disparity_min
         maximum = DEFAULT_DISPARITY_MAX if disparity_max is None else disparity_max
         validate_disparity_range(minimum, maximum)
         tools = Tools.discover(avifenc, avifdec, threads, timeout)
-        if doctor:
-            _doctor(tools)
-            return
-        assert capture is not None and calibration is not None and output is not None
+        assert calibration is not None and output is not None
         assert perspective_u is not None and perspective_v is not None and baseline is not None
         options = Conversion(
             capture,
@@ -194,6 +284,15 @@ def main(
             recipe,
             include_private_metadata,
             edof_center,
+            library=library,
+            lfp_raw=lfp_raw,
+            lfp_recipe=lfp_recipe,
+            lfp_depth=lfp_depth,
+            lfp_edof=lfp_edof,
+            recompute_depth=force_depth,
+            recompute_edof=force_edof,
+            no_recompute_depth=require_depth,
+            no_recompute_edof=require_edof,
             disparity_min=minimum,
             disparity_max=maximum,
         )

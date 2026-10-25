@@ -883,18 +883,32 @@ class AssemblyResult:
 
 
 def assemble(
-    center: Path, left: Path, right: Path, depth: Path, metadata: MetadataBundle, output: Path
+    center: Path,
+    left: Path,
+    right: Path,
+    depth: Path,
+    metadata: MetadataBundle,
+    output: Path,
+    *,
+    separate_center_profile: bool = False,
 ) -> AssemblyResult:
     inputs = [read(path) for path in (center, left, right, depth)]
     source_roles = [validate_color(avif) for avif in inputs[:3]]
     source_depth = validate_depth(inputs[3])
     if len({(role.width, role.height) for role in source_roles}) != 1:
         raise ContainerError("color-view dimensions differ")
-    source_icc = icc_profile(inputs[0], source_roles[0].base)
+    profiles = tuple(
+        icc_profile(avif, role.base) for avif, role in zip(inputs[:3], source_roles, strict=True)
+    )
+    source_icc = profiles[0]
     source_cicp = cicp(inputs[0], source_roles[0].base)
     for avif, roles in zip(inputs[:3], source_roles, strict=True):
-        if icc_profile(avif, roles.base) != source_icc or cicp(avif, roles.base) != source_cicp:
+        if (not separate_center_profile and icc_profile(avif, roles.base) != source_icc) or cicp(
+            avif, roles.base
+        ) != source_cicp:
             raise ContainerError("color interpretations differ between views")
+    if profiles[1] != profiles[2]:
+        raise ContainerError("stereo eye ICC profiles differ")
     merged = Avif(1, {}, [], {})
     new_roles: list[ColorRoles] = []
     next_id = 1
@@ -994,16 +1008,17 @@ def assemble(
         stereo_id,
         len(final),
     )
-    validate_final(final_graph, result, source_icc)
+    validate_final(final_graph, result, profiles if separate_center_profile else source_icc)
     output.write_bytes(final)
     return result
 
 
-def validate_final(avif: Avif, result: AssemblyResult, icc: bytes) -> None:
+def validate_final(avif: Avif, result: AssemblyResult, icc: bytes | tuple[bytes, ...]) -> None:
     validate_graph(avif)
     if avif.primary != result.center.base or len(avif.items) != 14:
         raise ContainerError("unexpected final primary/item count")
-    for roles in (result.center, result.left, result.right):
+    profiles = (icc, icc, icc) if isinstance(icc, bytes) else icc
+    for roles, profile in zip((result.center, result.left, result.right), profiles, strict=True):
         # Validate each imported color graph with only its own entities.
         ids = {roles.base, roles.suffix, roles.sato}
         sub = Avif(
@@ -1014,7 +1029,7 @@ def validate_final(avif: Avif, result: AssemblyResult, icc: bytes) -> None:
             [r for r in avif.references if r.kind == b"dimg" and r.source in ids],
             [g for g in avif.groups if g.kind == b"altr" and g.members == (roles.sato, roles.base)],
         )
-        validate_color(sub, icc, complete_color=True)
+        validate_color(sub, profile, complete_color=True)
     depth_id = result.depth.item
     depth_sub = Avif(
         depth_id,

@@ -119,3 +119,30 @@ def test_missing_convergence_is_rejected() -> None:
     del recipe["viewStereoPivot"]
     with pytest.raises(LytroError, match="stereo pivot"):
         resolve_recipe(recipe, perspective_u=0, perspective_v=0, baseline=0.1)
+
+
+def test_saved_stack_preserves_crop_spread_and_static_values_without_mutating_source() -> None:
+    source = source_recipe()
+    source["viewCrop"] = {
+        "angle": -2.045,
+        "top": 0.03,
+        "left": -0.001,
+        "bottom": 0.97,
+        "right": 1.001,
+    }
+    source["viewFocusSpread"] = 25.321
+    source["viewAperture"] = 2
+    source["viewFocusAnimation"]["values"] = [99]
+    original = copy.deepcopy(source)
+    resolved = resolve_recipe(
+        source, perspective_u=0, perspective_v=0, baseline=0.2, saved_stack=True
+    )
+    for view in resolved.views.values():
+        assert view["viewCrop"] == source["viewCrop"]
+        assert view["viewFocusSpread"] == 25.321
+        assert view["viewAperture"] == 2
+        assert view["viewFocus"] == 7
+        assert "viewFocusAnimation" not in view
+    assert source == original
+    with pytest.raises(LytroError):
+        resolve_recipe(source, perspective_u=0, perspective_v=0, baseline=0.2)

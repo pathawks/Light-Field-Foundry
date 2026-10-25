@@ -52,3 +52,83 @@ def test_inconsistent_view_icc_rejected() -> None:
     pixels = np.zeros((8, 8, 3), np.uint16)
     with pytest.raises(LytroError, match="mismatched"):
         matching_views([RGB16(pixels, b"one", {}), RGB16(pixels, b"two", {})])
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_exported_tnt_black_coverage_keeps_rgb_without_trimming(
+    tmp_path: Path, invalid: bool
+) -> None:
+    import struct
+
+    pixels = np.full((8, 8, 4), 65535, np.uint16)
+    pixels[0, 0] = [1 if invalid else 0, 0, 0, 0]
+    path = tmp_path / "coverage.tiff"
+    tifffile.imwrite(path, pixels, photometric="rgb", iccprofile=profile(), metadata=None)
+    # TNT's fourth channel has no ExtraSamples declaration; reproduce that layout.
+    with tifffile.TiffFile(path) as tiff:
+        page = tiff.pages[0]
+        assert isinstance(page, tifffile.TiffPage)
+        offset = page.tags[338].offset
+    data = bytearray(path.read_bytes())
+    struct.pack_into("<H", data, offset, 65000)
+    path.write_bytes(data)
+    with pytest.raises(LytroError, match="Nonopaque"):
+        read_tiff(path)
+    if invalid:
+        with pytest.raises(LytroError, match="Nonopaque"):
+            read_tiff(path, allow_black_coverage=True)
+    else:
+        image = read_tiff(path, allow_black_coverage=True)
+        np.testing.assert_array_equal(image.pixels, pixels[:, :, :3])
+        assert image.tags["coverage"]["black_pixels"] == 1
+
+
+@pytest.mark.parametrize("compression", [1, 5, 8, 32773, 32946, 34925, 34926, 50000])
+def test_lossless_tiff_codecs_keep_exact_rgb16_and_icc(tmp_path: Path, compression: int) -> None:
+    pixels = np.arange(192, dtype=np.uint16).reshape(8, 8, 3) * 337
+    icc = profile()
+    path = tmp_path / "lossless.tiff"
+    tifffile.imwrite(
+        path, pixels, photometric="rgb", compression=compression, iccprofile=icc, metadata=None
+    )
+    before = path.read_bytes()
+    image = read_tiff(path)
+    np.testing.assert_array_equal(image.pixels, pixels)
+    assert image.icc == icc
+    assert image.tags["259"]["value"] == compression
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "compression", [6, 7, 33004, 34712, 34892, 34927, 34934, 50001, 50002, 52546, 65534]
+)
+def test_ambiguous_or_lossy_tiff_codec_is_rejected_before_decoding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compression: int
+) -> None:
+    import struct
+
+    path = tmp_path / "not-lossless.tiff"
+    tifffile.imwrite(
+        path,
+        np.zeros((8, 8, 3), dtype=np.uint16),
+        photometric="rgb",
+        iccprofile=profile(),
+        metadata=None,
+    )
+    with tifffile.TiffFile(path) as tiff:
+        page = tiff.pages[0]
+        assert isinstance(page, tifffile.TiffPage)
+        offset = page.tags[259].valueoffset
+    data = bytearray(path.read_bytes())
+    # Keep the uncompressed payload intact: if a decoder is attempted, the
+    # compression declaration would no longer describe the samples.
+    struct.pack_into("<H", data, offset, compression)
+    path.write_bytes(data)
+
+    def decode(*_args, **_kwargs):
+        raise AssertionError("Rejected TIFF compression reached a pixel decoder")
+
+    monkeypatch.setattr(tifffile.TiffPage, "asarray", decode)
+    with pytest.raises(LytroError, match="lossless encoding"):
+        read_tiff(path)
+    assert path.read_bytes() == data
