@@ -1,6 +1,7 @@
 [build-system]
-requires = ["uv_build>=0.13.5,<0.14"]
-build-backend = "uv_build"
+requires = ["uv_build==0.13.5", "kaitaistruct==0.11.0"]
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "light-field-foundry"
@@ -16,6 +17,7 @@ dependencies = [
   "pypng>=0.20220715.0",
   "typer>=0.16",
   "rich>=14",
+  "kaitaistruct==0.11.0",
 ]
 
 [project.scripts]
@@ -25,7 +27,18 @@ lff = "light_field_foundry.cli:app"
 dev = ["pytest>=8.3", "ruff>=0.11", "ty>=0.0.1a14"]
 
 [tool.uv.build-backend]
-source-include = [".python-version", "tests/**", "uv.lock"]
+source-include = [".python-version", "tests/**", "uv.lock", "build_backend.py", "formats/**"]
+
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "build_backend.py" },
+  { file = "formats/**" },
+  { file = "src/light_field_foundry/_generated/**" },
+]
+
+[tool.kaitai]
+compiler-version = "0.11.0"
 
 [tool.ruff]
 target-version = "py312"
@@ -33,6 +46,12 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/light_field_foundry/_generated/lfp_framing.py" = ["ALL"]
+
+[tool.ruff.format]
+exclude = ["src/light_field_foundry/_generated/lfp_framing.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

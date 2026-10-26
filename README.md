@@ -352,7 +352,51 @@ capture; this is not general scene, camera, or Spatial acceptance.
 
 ## Development
 
+LFP/LFR binary framing is defined in [`formats/lfp_framing.ksy`](formats/lfp_framing.ksy)
+and read by a Kaitai-generated Python parser. Python retains the original JSON
+and payload bytes and validates SHA-1 references, metadata, and asset semantics.
+Chunks are parsed individually to avoid retaining an entire capture in memory.
+The schema documents field offsets, named layout constants, the shared signature
+structure and ASCII `LFP`/`LFM`/`LFC` tags, SHA-1 names, payloads, and padding.
+Its lazy `chunks` view also describes the complete file sequence for inspection.
+Format observations and historical field interpretations are distinguished from
+the application's size and compatibility limits.
+
+The generated Python is checked into source control with its `.ksy` schema and
+SHA-256 manifest. `uv build` verifies that pair before packaging with `uv_build`;
+missing or stale output fails with regeneration instructions. Normal source,
+wheel, and editable builds need no compiler or Java and download no compiler.
+The runtime is pinned exactly to **`kaitaistruct==0.11.0`** in both build and
+runtime dependencies; `uv_build` is also pinned exactly.
+
+Regeneration and CI use **Kaitai Struct compiler 0.11.0**, pinned in
+`[tool.kaitai]`. Upstream names this exact release **0.11**, which is equivalent
+to 0.11.0; newer patch releases and snapshots are rejected. Install the compiler
+from the [official 0.11 release](https://github.com/kaitai-io/kaitai_struct_compiler/releases/tag/0.11)
+and a Java runtime, then regenerate:
+
 ```sh
+uv run python build_backend.py --generate
+```
+
+`KAITAI_STRUCT_COMPILER` can select an alternate compiler executable path. The
+generator normalizes trailing whitespace for Git. Commit the schema, generated
+parser, and `formats/lfp_framing.generated.json` together.
+
+The [Kaitai workflow](.github/workflows/kaitai.yml) runs when schemas, generated
+files, compiler configuration, or build tooling change. It downloads the pinned
+compiler, verifies the archive's SHA-256, and runs this read-only comparison:
+
+```sh
+uv run python build_backend.py --check
+```
+
+This compiles the schema afresh and compares the actual generated Python, so
+updating the manifest alone cannot make an edited parser pass CI. Installed
+wheels only use the Python runtime; reading a photo never invokes the compiler.
+
+```sh
+uv run python build_backend.py --verify
 uv run ruff format --check .
 uv run ruff check .
 uv run ty check

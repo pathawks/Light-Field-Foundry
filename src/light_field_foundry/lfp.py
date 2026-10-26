@@ -14,15 +14,16 @@ import math
 import os
 import re
 import stat
-import struct
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from kaitaistruct import KaitaiStream, KaitaiStructError
 from numpy.typing import NDArray
 
+from ._generated.lfp_framing import LfpFraming
 from .errors import LytroError
 
 FILE_MAGIC = b"\x89LFP\r\n\x1a\n"
@@ -261,27 +262,26 @@ def read_lfp(path: Path) -> LfpContainer:
     sections: dict[str, Section] = {}
     masters: list[Section] = []
     with path.open("rb") as stream:
-        header = stream.read(16)
-        magic, version, flags = struct.unpack(">8sII", header)
-        if magic != FILE_MAGIC or version != 1 or flags != 0:
-            raise LytroError("Unsupported LFP file header (expected version 1, flags 0)")
-        position = 16
+        framing = KaitaiStream(stream)
+        try:
+            header = LfpFraming(MAX_SECTION_BYTES, size, framing)
+        except (KaitaiStructError, EOFError, UnicodeError) as exc:
+            raise LytroError(f"Unsupported or truncated LFP file header: {exc}") from exc
+        position = framing.pos()
         while position < size:
-            if len(sections) >= MAX_SECTIONS or size - position < 96:
-                raise LytroError("Too many LFP chunks or truncated chunk header")
-            stream.seek(position)
-            marker, length, reference_bytes = struct.unpack(">8sq80s", stream.read(96))
-            if marker not in {MASTER_MAGIC, CHUNK_MAGIC} or not 0 <= length <= MAX_SECTION_BYTES:
-                raise LytroError("Invalid LFP chunk marker or extent")
-            offset, end = position + 96, position + 96 + length
-            aligned = (end + 15) // 16 * 16
-            if end > size or aligned > size:
-                raise LytroError("Truncated LFP chunk data or alignment padding")
+            if len(sections) >= MAX_SECTIONS:
+                raise LytroError("Too many LFP chunks")
             try:
-                reference = reference_bytes.rstrip(b"\0").decode("ascii")
+                chunk = LfpFraming.Chunk(framing, header, header)
+            except (KaitaiStructError, EOFError, UnicodeError) as exc:
+                raise LytroError(f"Invalid LFP chunk framing or alignment padding: {exc}") from exc
+            offset = framing.pos() - len(chunk.padding) - chunk.len_payload
+            is_master = chunk.is_master
+            try:
+                reference = chunk.reference.rstrip(b"\0").decode("ascii")
             except UnicodeError as exc:
                 raise LytroError("Non-ASCII LFP chunk reference") from exc
-            data = stream.read(length)
+            data = chunk.payload
             _verify_digest(reference, data)
             if reference in sections:
                 raise LytroError("Duplicate LFP chunk reference")
@@ -290,28 +290,30 @@ def read_lfp(path: Path) -> LfpContainer:
             except LytroError:
                 # An opaque binary sample can begin with the byte 0x7b. Only
                 # master/metadata references require JSON interpretation.
-                if marker == MASTER_MAGIC:
+                if is_master:
                     raise
                 metadata, json_bytes = None, b""
             if metadata is not None and not data[len(json_bytes) :].strip():
                 json_bytes = data
-            if marker == MASTER_MAGIC and (metadata is None or data[len(json_bytes) :].strip()):
+            if is_master and (metadata is None or data[len(json_bytes) :].strip()):
                 raise LytroError("LFP master must contain only JSON")
-            stream.seek(end)
-            if any(stream.read(aligned - end)):
-                raise LytroError("Nonzero LFP alignment padding")
-            section = Section(
-                reference, offset, length, metadata, json_bytes, marker == MASTER_MAGIC
-            )
+            section = Section(reference, offset, chunk.len_payload, metadata, json_bytes, is_master)
             sections[reference] = section
             if section.is_master:
                 masters.append(section)
-            position = aligned
+            position = framing.pos()
     if len(masters) != 1:
         raise LytroError("LFP must contain exactly one master JSON chunk")
     master = masters[0]
     assert master.metadata is not None
-    return LfpContainer(path, version, flags, master.metadata, master.json_bytes, sections)
+    return LfpContainer(
+        path,
+        header.version,
+        header.package_payload_length,
+        master.metadata,
+        master.json_bytes,
+        sections,
+    )
 
 
 def capture_reference(lfp: LfpContainer) -> str:

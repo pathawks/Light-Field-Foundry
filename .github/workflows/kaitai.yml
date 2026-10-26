@@ -1,0 +1,49 @@
+name: Verify Kaitai generated sources
+
+on:
+  pull_request:
+    paths:
+      - "formats/**"
+      - "src/light_field_foundry/_generated/**"
+      - "build_backend.py"
+      - "pyproject.toml"
+      - ".github/workflows/kaitai.yml"
+  push:
+    paths:
+      - "formats/**"
+      - "src/light_field_foundry/_generated/**"
+      - "build_backend.py"
+      - "pyproject.toml"
+      - ".github/workflows/kaitai.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Upstream calls this release 0.11; pyproject.toml pins it as 0.11.0.
+      KAITAI_RELEASE: "0.11"
+      KAITAI_SHA256: "ff89389d9dc9e770d78a24af328763cb1f8e7b31ce7766c9edf10669a060f2a2"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Download and verify the pinned compiler
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/kaitai.zip"
+          curl --fail --location --retry 3 \
+            "https://github.com/kaitai-io/kaitai_struct_compiler/releases/download/$KAITAI_RELEASE/kaitai-struct-compiler-$KAITAI_RELEASE.zip" \
+            --output "$archive"
+          printf '%s  %s\n' "$KAITAI_SHA256" "$archive" | sha256sum --check --strict
+          unzip -q "$archive" -d "$RUNNER_TEMP/kaitai"
+      - name: Compare checked-in sources with fresh compiler output
+        shell: bash
+        run: |
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export KAITAI_STRUCT_COMPILER="$RUNNER_TEMP/kaitai/kaitai-struct-compiler-$KAITAI_RELEASE/bin/kaitai-struct-compiler"
+          python3 build_backend.py --check

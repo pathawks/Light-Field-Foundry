@@ -1,0 +1,5 @@
+{
+  "compiler": "kaitai-struct-compiler 0.11.0",
+  "schema_sha256": "3c4de4b5553c3e5aab2e0c8d1a849f46ea47174457c862101c9dbc50fd73d7d3",
+  "parser_sha256": "6547c3cf1ecdb60d18c9b31fa2f9c47bb8212344a9e13835c584bbcb1a2b32a1"
+}

@@ -8,7 +8,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from kaitaistruct import KaitaiStream
 
+from light_field_foundry._generated.lfp_framing import LfpFraming
 from light_field_foundry.errors import LytroError
 from light_field_foundry.lfp import (
     CHUNK_MAGIC,
@@ -88,6 +90,121 @@ def test_truncated_or_negative_extent_fails(tmp_path: Path) -> None:
         path.write_bytes(data)
         with pytest.raises(LytroError):
             read_lfp(path)
+
+
+@pytest.mark.parametrize(
+    ("offset", "replacement"),
+    [
+        (0, b"\0" * 8),
+        (1, b"BAD"),
+        (1, b"\xff"),
+        (4, b"\0"),
+        (8, struct.pack(">I", 2)),
+        (12, struct.pack(">I", 1)),
+        (16, b"\0" * 8),
+        (17, b"BAD"),
+        (17, b"\xff"),
+        (20, b"\0"),
+        (-1, b"\1"),
+    ],
+)
+def test_kaitai_validates_headers_and_padding(
+    tmp_path: Path, offset: int, replacement: bytes
+) -> None:
+    path = _container(tmp_path / "malformed.lfp", b"{}")
+    data = bytearray(path.read_bytes())
+    offset %= len(data)
+    data[offset : offset + len(replacement)] = replacement
+    path.write_bytes(data)
+    with pytest.raises(LytroError):
+        read_lfp(path)
+
+
+def test_missing_alignment_padding_fails(tmp_path: Path) -> None:
+    path = _container(tmp_path / "truncated.lfp", b"{}")
+    path.write_bytes(path.read_bytes()[:-1])
+    with pytest.raises(LytroError, match="padding"):
+        read_lfp(path)
+
+
+def test_configured_section_limit_is_checked_before_reading_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from light_field_foundry import lfp
+
+    path = _container(tmp_path / "bounded.lfp", b"{}")
+    monkeypatch.setattr(lfp, "MAX_SECTION_BYTES", 1)
+    read_bytes = lfp.KaitaiStream.read_bytes
+
+    def bounded_read(stream: lfp.KaitaiStream, size: int) -> bytes:
+        if size == 2:
+            pytest.fail("Oversized payload was read before its length was validated")
+        return read_bytes(stream, size)
+
+    monkeypatch.setattr(lfp.KaitaiStream, "read_bytes", bounded_read)
+    with pytest.raises(LytroError):
+        read_lfp(path)
+
+
+def test_chunk_count_limit_is_retained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from light_field_foundry import lfp
+
+    path = _container(tmp_path / "bounded.lfp", b"{}", b"payload")
+    monkeypatch.setattr(lfp, "MAX_SECTIONS", 1)
+    with pytest.raises(LytroError, match="Too many"):
+        read_lfp(path)
+
+
+def test_duplicate_chunk_references_fail(tmp_path: Path) -> None:
+    path = _container(tmp_path / "duplicate.lfp", b"{}", b"payload", b"payload")
+    with pytest.raises(LytroError, match="Duplicate LFP chunk reference"):
+        read_lfp(path)
+
+
+@pytest.mark.parametrize("multiple", [False, True])
+def test_exactly_one_master_is_required(tmp_path: Path, multiple: bool) -> None:
+    path = _container(tmp_path / "masters.lfp", b"{}", b'{"other":1}')
+    data = bytearray(path.read_bytes())
+    if multiple:
+        data[128:136] = MASTER_MAGIC
+    else:
+        data[16:24] = CHUNK_MAGIC
+    path.write_bytes(data)
+    with pytest.raises(LytroError, match="exactly one master"):
+        read_lfp(path)
+
+
+@pytest.mark.parametrize("payload", [b"{binary}\0", b'{"x":1}\xff\0', bytes(range(256))])
+def test_opaque_payloads_and_offsets_remain_exact(tmp_path: Path, payload: bytes) -> None:
+    lfp = read_lfp(_container(tmp_path / "opaque.lfp", b"{}", payload))
+    reference = _reference(payload)
+    section = lfp.sections[reference]
+    assert section.offset == 224
+    assert section.length == len(payload)
+    assert lfp.payload(reference) == payload
+
+
+def test_complete_kaitai_grammar_and_streaming_view_agree(tmp_path: Path) -> None:
+    payloads = (b"{}", b"A" * 16, b"B" * 17, b"", b"\x89")
+    path = _container(tmp_path / "complete.lfp", *payloads)
+    with path.open("rb") as stream:
+        framing = KaitaiStream(stream)
+        header = LfpFraming(MAX_SECTION_BYTES, path.stat().st_size, framing)
+        assert header.magic.tag == "LFP"
+        assert header.alignment == header.file_header_size == 16
+        assert header.reference_size == 80
+        assert header.chunk_header_size == 96
+        assert not hasattr(header, "_m_chunks")
+        first = LfpFraming.Chunk(framing, header, header)
+        assert first.is_master and first.marker.tag == "LFM"
+        position = framing.pos()
+        chunks = header.chunks
+        assert framing.pos() == position
+        assert [chunk.payload for chunk in chunks] == list(payloads)
+        assert [chunk.marker.tag for chunk in chunks] == ["LFM", "LFC", "LFC", "LFC", "LFC"]
+        assert [chunk.is_master for chunk in chunks] == [True, False, False, False, False]
+        for chunk, payload in zip(chunks, payloads, strict=True):
+            assert chunk.reference == _reference(payload).encode().ljust(80, b"\0")
 
 
 @pytest.mark.parametrize(
