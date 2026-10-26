@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
-from lytro_avif import sources
-from lytro_avif.errors import LytroError
-from lytro_avif.lfp import (
+from light_field_foundry import sources
+from light_field_foundry.errors import LytroError
+from light_field_foundry.lfp import (
     CHUNK_MAGIC,
     FILE_MAGIC,
     MASTER_MAGIC,

@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from lytro_avif import bmff
+from light_field_foundry import bmff
 
 ICC = b"synthetic ICC bytes for container-only preservation tests"
 

@@ -21,7 +21,9 @@ from .pipeline import doctor as run_doctor
 from .tools import Tools
 
 app = typer.Typer(
-    no_args_is_help=True, help="Tools for working with Lytro captures and image exports."
+    name="lff",
+    no_args_is_help=True,
+    help="Light Field Foundry: develop Lytro captures into Portrait and Spatial AVIF images.",
 )
 console = Console(highlight=False)
 
@@ -57,7 +59,7 @@ def root(
         ),
     ] = False,
 ) -> None:
-    """Lytro capture and image tools."""
+    """Light Field Foundry: develop light-field captures into modern photographs."""
 
 
 @app.command("doctor", no_args_is_help=False)
@@ -250,11 +252,7 @@ def image_out(
     if calibration is None and library is not None:
         calibration = library.expanduser() / "cameras"
     required = {
-        "CAPTURE or an --lfp-* input": capture
-        or lfp_raw
-        or lfp_recipe
-        or lfp_depth
-        or lfp_edof,
+        "CAPTURE or an --lfp-* input": capture or lfp_raw or lfp_recipe or lfp_depth or lfp_edof,
         "--calibration": calibration,
         "--output": output,
         "--perspective-u": perspective_u,

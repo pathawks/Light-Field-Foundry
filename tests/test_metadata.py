@@ -10,8 +10,8 @@ from xml.etree import ElementTree as ET
 import pytest
 import tifffile
 
-from lytro_avif.errors import LytroError
-from lytro_avif.metadata import (
+from light_field_foundry.errors import LytroError
+from light_field_foundry.metadata import (
     NS,
     REND_SHA256,
     apple_maker_note,
@@ -102,16 +102,17 @@ def test_xmp_preserves_original_json_bytes_and_distinct_recipe_provenance() -> N
     raw = b'{ "camera": {"make":"Lytro, Inc.","model":"F01"}, "test": -0 }'
     recipe = b'{"viewFocus":-0}'
     bundle = build_metadata((raw,), recipe, {"center": {"u": 0}}, {"tnt": "2.0"}, 1134, 1134, -2, 3)
+    assert b'xmlns:lff="https://light-field-foundry.org/ns/1.0/"' in bundle.primary_xmp
     root = ET.fromstring(bundle.primary_xmp)
-    public = root.find(".//lytro:SourcePublicJSONBase64/rdf:Seq/rdf:li", NS)
+    public = root.find(".//lff:SourcePublicJSONBase64/rdf:Seq/rdf:li", NS)
     assert public is not None and base64.b64decode(public.text or "") == raw
-    recipe_field = root.find(".//lytro:SourceRecipeJSONBase64", NS)
+    recipe_field = root.find(".//lff:SourceRecipeJSONBase64", NS)
     assert recipe_field is not None and base64.b64decode(recipe_field.text or "") == recipe
-    assert root.find(".//lytro:SourcePrivateJSONBase64", NS) is None
+    assert root.find(".//lff:SourcePrivateJSONBase64", NS) is None
     assert xml_text(root, ".//stDim:w") == "1134"
     assert xml_text(root, ".//stArea:x") == "0.5"
     assert xml_text(root, ".//stArea:w") == "1"
-    provenance = root.find(".//lytro:CompatibilityProvenanceJSON", NS)
+    provenance = root.find(".//lff:CompatibilityProvenanceJSON", NS)
     assert provenance is not None
     assert json.loads(provenance.text or "")["spatial"]["referenceWidth"] == 640
 
@@ -178,13 +179,13 @@ def test_original_master_retained_without_private_payload_and_explicit_private_o
     private = b'{"camera":{"serialNumber":"PRIVATE-TEST-SERIAL"}}'
     default = build_metadata((public,), b"{}", {}, {}, 16, 16, 0, 1, master_json=master)
     root = ET.fromstring(default.primary_xmp)
-    original = xml_text(root, ".//lytro:SourceMasterJSONBase64")
+    original = xml_text(root, ".//lff:SourceMasterJSONBase64")
     assert original is not None and base64.b64decode(original) == master
-    assert root.find(".//lytro:SourcePrivateJSONBase64", NS) is None
+    assert root.find(".//lff:SourcePrivateJSONBase64", NS) is None
     assert private not in default.primary_xmp
     included = build_metadata((public,), b"{}", {}, {}, 16, 16, 0, 1, private_json=(private,))
     root = ET.fromstring(included.primary_xmp)
-    field = xml_text(root, ".//lytro:SourcePrivateJSONBase64/rdf:Seq/rdf:li")
+    field = xml_text(root, ".//lff:SourcePrivateJSONBase64/rdf:Seq/rdf:li")
     assert field is not None and base64.b64decode(field) == private
 
 
@@ -196,7 +197,7 @@ def test_depth_distinguishes_native_relative_disparity_from_descending_source_la
     }
     bundle = build_metadata((b"{}",), b"{}", {}, {}, 16, 16, 0, 1, source_depth_mapping=mapping)
     root = ET.fromstring(bundle.depth_xmp)
-    data = json.loads(xml_text(root, ".//lytro:DepthInterpretation") or "")
+    data = json.loads(xml_text(root, ".//lff:DepthInterpretation") or "")
     assert data["codeToRelativeDisparityEndpoints"] == [0, 1]
     assert data["sourceLambdaMapping"] == mapping
     assert "codeToLambdaEndpoints" not in data

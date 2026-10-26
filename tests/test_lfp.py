@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lytro_avif.errors import LytroError
-from lytro_avif.lfp import (
+from light_field_foundry.errors import LytroError
+from light_field_foundry.lfp import (
     CHUNK_MAGIC,
     FILE_MAGIC,
     MASTER_MAGIC,
@@ -341,7 +341,7 @@ def test_exported_png_depth_retains_original_codes_and_declared_range(tmp_path: 
 
 
 def test_role_capture_reference_requires_one_valid_capture_identity(tmp_path: Path) -> None:
-    from lytro_avif.lfp import capture_reference
+    from light_field_foundry.lfp import capture_reference
 
     reference = _reference(b"original raw is external")
     frame = {"frame": {"imageRef": reference}}
@@ -357,7 +357,7 @@ def test_role_capture_reference_requires_one_valid_capture_identity(tmp_path: Pa
 
 
 def test_recipe_role_needs_no_depth_or_images_and_rejects_ambiguity(tmp_path: Path) -> None:
-    from lytro_avif.lfp import extract_recipe, has_edof
+    from light_field_foundry.lfp import extract_recipe, has_edof
 
     recipe = {"viewFocus": 2, "viewFocusSpread": 25, "viewCrop": {"angle": -2}}
     master = {"views": [{"recipe4": recipe}]}
@@ -375,7 +375,7 @@ def test_edof_role_needs_no_depth_and_measures_actual_tiff_dimensions(tmp_path: 
 
     import tifffile
 
-    from lytro_avif.lfp import extract_edof, has_edof
+    from light_field_foundry.lfp import extract_edof, has_edof
 
     stream = io.BytesIO()
     tifffile.imwrite(stream, np.zeros((2, 3, 3), dtype=np.uint16), photometric="rgb", metadata=None)
@@ -488,7 +488,7 @@ def test_edof_role_rejects_lossy_or_ambiguous_tiff_compression(
 
     import tifffile
 
-    from lytro_avif.lfp import extract_edof
+    from light_field_foundry.lfp import extract_edof
 
     stream = io.BytesIO()
     tifffile.imwrite(stream, np.zeros((2, 3, 3), dtype=np.uint16), photometric="rgb", metadata=None)

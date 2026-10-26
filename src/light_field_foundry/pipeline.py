@@ -162,7 +162,7 @@ def _publish(stage: Path, output: Path) -> None:
             # A destination on another filesystem needs one publication copy.
             # The verified AVIF stays private until the final atomic link.
             with tempfile.TemporaryDirectory(
-                prefix=f".{output.name}.lytro-avif-", dir=output.parent
+                prefix=f".{output.name}.lff-", dir=output.parent
             ) as directory:
                 candidate = Path(directory) / "completed.avif"
                 shutil.copyfile(stage, candidate)
@@ -284,7 +284,7 @@ def convert(
     report("Checking installed codecs and the native Apple depth control…")
     control = doctor(tools, report)
     with workspace() as work:
-        versions = {key: str(control[key]) for key in ("tnt", "avifenc", "avifdec")}
+        versions = {key: str(control[key]) for key in ("tnt", "avifenc", "avifdec", "imagecodecs")}
         versions["tnt"] = versions["tnt"].replace(str(tools.tnt), "TNT")
         # No native command receives a source RAW. Strip all processed cache
         # references, retaining exact raw/metadata chunks in a private input.
@@ -441,7 +441,7 @@ def convert(
         ]
         encoded_depth = encode_depth(tools, work, codes)
         provenance = {
-            "application": f"lytro-avif {__version__}",
+            "application": f"Light Field Foundry {__version__}",
             "inputRoles": sources.provenance,
             "recomputePolicy": {
                 "depth": "never"

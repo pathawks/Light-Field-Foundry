@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner, Result
 
-from lytro_avif import cli
-from lytro_avif.cli import app
-from lytro_avif.pipeline import DEFAULT_DISPARITY_MAX, DEFAULT_DISPARITY_MIN, Conversion
+from light_field_foundry import cli
+from light_field_foundry.cli import app
+from light_field_foundry.pipeline import DEFAULT_DISPARITY_MAX, DEFAULT_DISPARITY_MIN, Conversion
 
 
 def test_version_does_not_require_a_capture() -> None:
@@ -17,6 +17,8 @@ def test_cli_help_explains_contract_and_required_inputs() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["--help"], color=False)
     assert result.exit_code == 0
+    assert "Usage: lff" in result.output
+    assert "Light Field Foundry" in result.output
     assert "image-out" in result.output and "doctor" in result.output
     result = runner.invoke(app, ["image-out", "--help"], color=False)
     assert result.exit_code == 0

@@ -5,8 +5,8 @@ import pytest
 import tifffile
 from PIL import ImageCms
 
-from lytro_avif.errors import LytroError
-from lytro_avif.images import RGB16, matching_views, read_png, read_tiff, write_png
+from light_field_foundry.errors import LytroError
+from light_field_foundry.images import RGB16, matching_views, read_png, read_tiff, write_png
 
 
 def profile() -> bytes:

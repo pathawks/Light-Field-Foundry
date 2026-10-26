@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from lytro_avif.errors import LytroError
-from lytro_avif.lfp import FloatDepth, validate_alignment
-from lytro_avif.pipeline import _check_cached_edof
-from lytro_avif.recipe import GEOMETRY
+from light_field_foundry.errors import LytroError
+from light_field_foundry.lfp import FloatDepth, validate_alignment
+from light_field_foundry.pipeline import _check_cached_edof
+from light_field_foundry.recipe import GEOMETRY
 
 
 def recipe():

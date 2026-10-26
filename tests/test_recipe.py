@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from lytro_avif.errors import LytroError
-from lytro_avif.recipe import GEOMETRY, resolve_recipe
+from light_field_foundry.errors import LytroError
+from light_field_foundry.recipe import GEOMETRY, resolve_recipe
 
 
 def source_recipe() -> dict:

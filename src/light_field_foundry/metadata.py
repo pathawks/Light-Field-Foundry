@@ -1,6 +1,6 @@
 """Source-faithful capture metadata and the demonstrated Apple compatibility recipe.
 
-Original JSON is base64 in the documented ``https://lytro-bigger-tools.org/ns/1.0/``
+Original JSON is base64 in the documented ``https://light-field-foundry.org/ns/1.0/``
 XMP namespace: JSON numbers, signed zero, whitespace, and Unicode remain exact.
 Generated compatibility declarations are separate from source capture metadata.
 """
@@ -24,7 +24,7 @@ from xml.etree import ElementTree as ET
 from .errors import LytroError
 
 REND_SHA256 = "c74bf7b16f10415053cd032902d0b0feb78b91acb046eb6d8e3a438cdff24622"
-NAMESPACE = "https://lytro-bigger-tools.org/ns/1.0/"
+NAMESPACE = "https://light-field-foundry.org/ns/1.0/"
 MAX_JSON_BYTES = 16 * 1024 * 1024
 NS = {
     "x": "adobe:ns:meta/",
@@ -36,7 +36,7 @@ NS = {
     "mwg-rs": "http://www.metadataworkinggroup.com/schemas/regions/",
     "stDim": "http://ns.adobe.com/xap/1.0/sType/Dimensions#",
     "stArea": "http://ns.adobe.com/xmp/sType/Area#",
-    "lytro": NAMESPACE,
+    "lff": NAMESPACE,
 }
 for _prefix, _uri in NS.items():
     ET.register_namespace(_prefix, _uri)
@@ -91,7 +91,7 @@ def _xml(root: ET.Element) -> bytes:
 def rendering_parameters() -> bytes:
     """Read and verify the exact reference packet before every use."""
     try:
-        encoded = files("lytro_avif").joinpath("resources/portrait_rend.b64").read_bytes()
+        encoded = files("light_field_foundry").joinpath("resources/portrait_rend.b64").read_bytes()
         packet = base64.b64decode(encoded.strip(), validate=True)
     except (OSError, ValueError) as error:
         raise LytroError(f"Cannot read Portrait rendering compatibility packet: {error}") from error
@@ -180,7 +180,7 @@ def depth_xmp(
     )
     _field(
         description,
-        "lytro",
+        "lff",
         "DepthInterpretation",
         json.dumps(
             {
@@ -377,7 +377,7 @@ def build_metadata(
         _field(area, "stArea", name, value)
     _field(
         description,
-        "lytro",
+        "lff",
         "FocusRegionProvenance",
         "Full-frame presentation compatibility region; no detected-subject or source-focus-region claim",
     )
@@ -385,7 +385,7 @@ def build_metadata(
         _raw_json(master_json)
         _field(
             description,
-            "lytro",
+            "lff",
             "SourceMasterJSONBase64",
             base64.b64encode(master_json).decode("ascii"),
         )
@@ -395,33 +395,31 @@ def build_metadata(
     ]:
         if not packets:
             continue
-        sequence = ET.SubElement(
-            ET.SubElement(description, _tag("lytro", name)), _tag("rdf", "Seq")
-        )
+        sequence = ET.SubElement(ET.SubElement(description, _tag("lff", name)), _tag("rdf", "Seq"))
         for packet in packets:
             _raw_json(packet)
             _field(sequence, "rdf", "li", base64.b64encode(packet).decode("ascii"))
     _field(
         description,
-        "lytro",
+        "lff",
         "SourceRecipeJSONBase64",
         base64.b64encode(source_recipe).decode("ascii"),
     )
     _field(
         description,
-        "lytro",
+        "lff",
         "EffectiveRenderSettingsJSON",
         json.dumps(dict(effective_settings), separators=(",", ":"), allow_nan=False),
     )
     _field(
         description,
-        "lytro",
+        "lff",
         "RenderProvenanceJSON",
         json.dumps(dict(provenance), separators=(",", ":"), allow_nan=False),
     )
     _field(
         description,
-        "lytro",
+        "lff",
         "CompatibilityProvenanceJSON",
         json.dumps(
             {

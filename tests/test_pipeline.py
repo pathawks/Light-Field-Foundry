@@ -12,10 +12,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from lytro_avif import pipeline
-from lytro_avif.errors import LytroError
-from lytro_avif.images import RGB16
-from lytro_avif.tools import Tools
+from light_field_foundry import pipeline
+from light_field_foundry.errors import LytroError
+from light_field_foundry.images import RGB16
+from light_field_foundry.tools import Tools
 
 
 def test_atomic_publish_never_replaces_existing_file(tmp_path: Path) -> None:
@@ -87,7 +87,12 @@ def _mock_conversion(
     monkeypatch.setattr(
         pipeline,
         "doctor",
-        lambda *_: {"tnt": "TNT fixture", "avifenc": "fixture", "avifdec": "fixture"},
+        lambda *_: {
+            "tnt": "TNT fixture",
+            "avifenc": "fixture",
+            "avifdec": "fixture",
+            "imagecodecs": "fixture",
+        },
     )
 
     def run(_tools: Tools, args: list[Any], cwd: Path) -> str:
@@ -174,7 +179,7 @@ def test_failure_removes_all_owned_temporary_files(
     assert not options.output.exists()
     assert workdirs and all(not path.exists() for path in workdirs)
     assert "stage" not in state or not state["stage"].exists()
-    assert not list(tmp_path.glob(".photo.avif.lytro-avif-*"))
+    assert not list(tmp_path.glob(".photo.avif.lff-*"))
     assert {
         path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     } == original_files
@@ -191,7 +196,7 @@ def test_success_publishes_one_file_and_preserves_external_inputs(
     assert len(str(result["sha256"])) == 64
     assert workdirs and all(not path.exists() for path in workdirs)
     assert not state["stage"].exists()
-    assert not list(tmp_path.glob(".photo.avif.lytro-avif-*"))
+    assert not list(tmp_path.glob(".photo.avif.lff-*"))
     remaining = {
         path: path.read_bytes()
         for path in tmp_path.rglob("*")
@@ -214,7 +219,7 @@ def test_output_collision_after_validation_preserves_existing_output(
         pipeline.convert(options, tools, lambda _: None)
     assert options.output.read_bytes() == b"another writer won"
     assert all(not path.exists() for path in workdirs)
-    assert not list(tmp_path.glob(".photo.avif.lytro-avif-*"))
+    assert not list(tmp_path.glob(".photo.avif.lff-*"))
 
 
 def test_existing_output_fails_before_any_native_invocation(

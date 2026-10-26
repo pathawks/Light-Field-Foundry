@@ -129,7 +129,7 @@ def workspace() -> Generator[Path]:
 
     signal.signal(signal.SIGTERM, terminate)
     try:
-        with tempfile.TemporaryDirectory(prefix="lytro-avif-") as directory:
+        with tempfile.TemporaryDirectory(prefix="lff-") as directory:
             yield Path(directory)
     finally:
         signal.signal(signal.SIGTERM, previous)

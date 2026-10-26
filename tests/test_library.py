@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from lytro_avif import library
-from lytro_avif.errors import LytroError
-from lytro_avif.lfp import LfpContainer
+from light_field_foundry import library
+from light_field_foundry.errors import LytroError
+from light_field_foundry.lfp import LfpContainer
 
 PICTURE = "405589c3-e8d7-4648-ade4-81abbf155a9a"
 BIN = "efa39c92-67ef-4420-8ac7-e41ff2a43a98"

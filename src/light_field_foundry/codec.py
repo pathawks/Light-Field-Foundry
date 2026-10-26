@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import imagecodecs
 import numpy as np
 import png
 from PIL import ImageCms
@@ -13,14 +14,6 @@ from . import bmff
 from .errors import LytroError
 from .images import RGB16, U16, read_png, write_png
 from .tools import Tools, require_output
-
-
-def write_depth(path: Path, codes: U16) -> None:
-    if codes.dtype != np.uint16 or codes.ndim != 2 or not codes.size or np.max(codes) > 4095:
-        raise LytroError("Depth input must be one uint16 plane with codes 0..4095.")
-    height, width = codes.shape
-    header = f"YUV4MPEG2 W{width} H{height} F1:1 Ip A0:0 Cmono12 XCOLORRANGE=FULL\nFRAME\n"
-    path.write_bytes(header.encode("ascii") + codes.astype("<u2").tobytes())
 
 
 def read_y4m(path: Path) -> tuple[int, str, list[U16]]:
@@ -64,6 +57,8 @@ def read_y4m(path: Path) -> tuple[int, str, list[U16]]:
 
 
 def encode_color(tools: Tools, work: Path, name: str, image: RGB16) -> Path:
+    # TODO: Replace avifenc when imagecodecs exposes sato sample-transform
+    # encoding (RGB16 as high12 + low4) and ICC profile embedding.
     source, icc, target = work / f"{name}.png", work / f"{name}.icc", work / f"{name}.avif"
     write_png(source, image)
     icc.write_bytes(image.icc)
@@ -124,22 +119,27 @@ def encode_color(tools: Tools, work: Path, name: str, image: RGB16) -> Path:
 
 
 def encode_depth(tools: Tools, work: Path, codes: U16) -> Path:
-    source, target = work / "depth.y4m", work / "depth.avif"
-    write_depth(source, codes)
-    tools.run(
-        [
-            tools.avifenc,
-            "--jobs",
-            str(tools.threads),
-            "-q",
-            "100",
-            "--cicp",
-            "2/2/2",
-            source,
-            target,
-        ],
-        work,
-    )
+    if codes.dtype != np.uint16 or codes.ndim != 2 or not codes.size or np.max(codes) > 4095:
+        raise LytroError("Depth input must be one uint16 plane with codes 0..4095.")
+    target = work / "depth.avif"
+    try:
+        encoded = bytes(
+            imagecodecs.avif_encode(
+                np.ascontiguousarray(codes),
+                level=imagecodecs.AVIF.QUALITY.LOSSLESS,
+                bitspersample=12,
+                codec=imagecodecs.AVIF.CODEC_CHOICE.AOM,
+                speed=6,
+                numthreads=tools.threads,
+                primaries=2,
+                transfer=2,
+                matrix=2,
+            )
+        )
+    except (imagecodecs.AvifError, ValueError, RuntimeError) as exc:
+        raise LytroError(f"imagecodecs depth encoding failed: {exc}") from exc
+    bmff.validate_depth(bmff.parse(encoded))
+    target.write_bytes(encoded)
     require_output(target)
     return target
 
@@ -248,6 +248,7 @@ def synthetic_probes(tools: Tools, work: Path) -> dict[str, str]:
     depth = encode_depth(tools, work, ramp)
     verify_depth(tools, work, depth, ramp)
     return {
+        "imagecodecs": f"{imagecodecs.__version__} ({imagecodecs.avif_version()})",
         "RGB16_SATO": "exact, AOM + dav1d",
         "monochrome12": "4096/4096 levels exact, AOM + dav1d",
     }

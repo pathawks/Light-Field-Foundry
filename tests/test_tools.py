@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from lytro_avif.errors import LytroError
-from lytro_avif.tools import Tools, executable, workspace
+from light_field_foundry.errors import LytroError
+from light_field_foundry.tools import Tools, executable, workspace
 
 
 def test_bad_explicit_tool_never_falls_back(tmp_path: Path) -> None:

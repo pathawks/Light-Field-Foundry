@@ -24,7 +24,9 @@ def verify_native(
         raise LytroError("This release requires the validated macOS native depth path.")
     compiler = executable("swiftc")
     source = work / "native_depth.swift"
-    source.write_bytes(files("lytro_avif").joinpath("resources/native_depth.swift").read_bytes())
+    source.write_bytes(
+        files("light_field_foundry").joinpath("resources/native_depth.swift").read_bytes()
+    )
     binary = work / "native-depth"
     tools.run(
         [
