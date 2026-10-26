@@ -103,7 +103,9 @@ def test_monochrome_precision_comes_from_sequence_header() -> None:
     avif = bmff.parse(bmff.serialize(_depth()))
     assert bmff.validate_depth(avif) == bmff.DepthRoles(1, 16, 16)
     seq = bmff.sequence(avif, 1)
-    assert seq.depth == 12 and seq.monochrome and seq.full_range
+    assert seq.depth == 12
+    assert seq.monochrome
+    assert seq.full_range
 
 
 def test_decoder_primary_selection_patches_only_pitm() -> None:

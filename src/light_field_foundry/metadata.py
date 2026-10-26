@@ -85,7 +85,10 @@ def _sequence(parent: ET.Element, name: str, values: Sequence[object]) -> None:
 
 
 def _xml(root: ET.Element) -> bytes:
-    return ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    packet = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    if not isinstance(packet, bytes):
+        raise LytroError("XML serializer did not return UTF-8 bytes")
+    return packet
 
 
 def rendering_parameters() -> bytes:
@@ -191,7 +194,9 @@ def depth_xmp(
                 "rounding": "nearest, ties to even",
                 "polarity": "ascending" if b > a else "descending",
                 "meaning": "relative disparity; not metric distance",
-                "sourceLambdaMapping": dict(source_mapping) if source_mapping else None,
+                "sourceLambdaMapping": dict(source_mapping)
+                if source_mapping is not None and len(source_mapping) > 0
+                else None,
                 "quantization": "q = roundTiesToEven(4095 * (lambda - sourceLambdaAtCode0) / (sourceLambdaAtCode4095 - sourceLambdaAtCode0)); original endpoint labels and polarity are in sourceLambdaMapping",
                 "calibration": "synthetic compatibility values, scaled from the demonstrated 1134x1134 reference",
                 "qualityAndFiltered": "compatibility declarations; no new quality measurement or filtering",
@@ -259,7 +264,7 @@ def _timestamp(value: object) -> tuple[bytes, bytes, bytes | None] | None:
     return (
         parsed.strftime("%Y:%m:%d %H:%M:%S").encode("ascii") + b"\0",
         offset_text.encode("ascii") + b"\0",
-        fraction[1].encode("ascii") + b"\0" if fraction else None,
+        value[fraction.start(1) : fraction.end(1)].encode("ascii") + b"\0" if fraction else None,
     )
 
 

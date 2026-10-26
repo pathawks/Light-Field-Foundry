@@ -19,7 +19,7 @@ from .errors import LytroError
 def executable(name: str, explicit: Path | str | None = None) -> Path:
     """An explicit bad path is never silently replaced by another executable."""
     value = str(explicit) if explicit is not None else shutil.which(name)
-    if not value:
+    if value is None or value == "":
         raise LytroError(f"Missing {name}; install it yourself and put it on PATH.")
     path = Path(value).expanduser().absolute()
     if not path.is_file() or not os.access(path, os.X_OK):
@@ -58,7 +58,7 @@ class Tools:
         command = [str(arg) for arg in args]
         output = bytearray()
         try:
-            process = subprocess.Popen(
+            process = subprocess.Popen(  # noqa: S603 -- user-selected executable, no shell
                 command,
                 cwd=cwd,
                 stdout=subprocess.PIPE,
@@ -68,7 +68,10 @@ class Tools:
             )
         except OSError as exc:
             raise LytroError(f"Could not launch {Path(command[0]).name}: {exc}") from exc
-        assert process.stdout is not None
+        if process.stdout is None:
+            process.kill()
+            process.wait()
+            raise LytroError("Could not capture the tool's output")
         stream = process.stdout
 
         def drain() -> None:

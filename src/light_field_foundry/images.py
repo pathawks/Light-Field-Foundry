@@ -66,7 +66,7 @@ def validate_icc(icc: bytes) -> None:
         raise LytroError(f"ICC profile failed LittleCMS validation: {exc}") from exc
 
 
-def _json_value(value: Any) -> Any:
+def _json_value(value: object) -> object:
     if isinstance(value, bytes):
         return {"encoding": "base64", "bytes": base64.b64encode(value).decode("ascii")}
     if isinstance(value, np.ndarray):

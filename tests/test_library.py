@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,9 @@ PICTURE = "405589c3-e8d7-4648-ade4-81abbf155a9a"
 BIN = "efa39c92-67ef-4420-8ac7-e41ff2a43a98"
 
 
-def test_library_lookup_checks_identity_and_never_changes_database(tmp_path, monkeypatch):
+def test_library_lookup_checks_identity_and_never_changes_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "test.lytrolibrary"
     raw = root / BIN / PICTURE / "raw.lfp"
     raw.parent.mkdir(parents=True)
@@ -43,7 +46,9 @@ def test_library_lookup_checks_identity_and_never_changes_database(tmp_path, mon
         library.find_raw(stack, root)
 
 
-def test_library_lookup_allows_unbound_recipe_only_when_explicitly_requested(tmp_path, monkeypatch):
+def test_library_lookup_allows_unbound_recipe_only_when_explicitly_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "test.lytrolibrary"
     raw = root / BIN / PICTURE / "raw.lfp"
     raw.parent.mkdir(parents=True)

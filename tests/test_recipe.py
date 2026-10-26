@@ -9,7 +9,7 @@ from light_field_foundry.errors import LytroError
 from light_field_foundry.recipe import GEOMETRY, resolve_recipe
 
 
-def source_recipe() -> dict:
+def source_recipe() -> dict[str, Any]:
     return {
         **copy.deepcopy(GEOMETRY),
         "viewFocus": 7,
@@ -91,7 +91,7 @@ def test_refocused_center_is_explicit() -> None:
         {"viewFocusAnimation": {"values": [1]}},
     ],
 )
-def test_unverified_saved_geometry_or_animation_fails(edits: dict) -> None:
+def test_unverified_saved_geometry_or_animation_fails(edits: dict[str, Any]) -> None:
     with pytest.raises(LytroError):
         resolve_recipe(source_recipe(), edits, perspective_u=0, perspective_v=0, baseline=0.1)
 
@@ -108,7 +108,7 @@ def test_unverified_saved_geometry_or_animation_fails(edits: dict) -> None:
         {"stereo_pivot": float("inf")},
     ],
 )
-def test_invalid_or_unverified_controls_fail(options: dict) -> None:
+def test_invalid_or_unverified_controls_fail(options: dict[str, Any]) -> None:
     kwargs: dict[str, Any] = {"perspective_u": 0, "perspective_v": 0, "baseline": 0.1, **options}
     with pytest.raises(LytroError):
         resolve_recipe(source_recipe(), **kwargs)

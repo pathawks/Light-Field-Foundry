@@ -66,14 +66,17 @@ def regenerate(root: Path = ROOT, *, check: bool = False) -> None:
             f"Install kaitai-struct-compiler {expected}, or set KAITAI_STRUCT_COMPILER "
             "to its executable. The compiler is only needed for regeneration and CI checks."
         )
-    version = subprocess.run([compiler, "--version"], check=True, capture_output=True, text=True)
+    # The compiler is an explicitly selected executable; arguments never invoke a shell.
+    version = subprocess.run(  # noqa: S603
+        [compiler, "--version"], check=True, capture_output=True, text=True
+    )
     match = re.fullmatch(r"kaitai-struct-compiler (\d+)\.(\d+)(?:\.(\d+))?", version.stdout.strip())
     # Upstream labels the 0.11.0 release as 0.11; accept only that exact release.
     actual = ".".join(part or "0" for part in match.groups()) if match else None
     if actual != expected:
         raise RuntimeError(f"Parser generation requires kaitai-struct-compiler {expected}")
     with tempfile.TemporaryDirectory(prefix="lff-kaitai-") as directory:
-        subprocess.run(
+        subprocess.run(  # noqa: S603 -- pinned compiler, explicit arguments, no shell
             [compiler, "--target", "python", "--outdir", directory, str(root / SCHEMA)],
             check=True,
         )
@@ -107,13 +110,19 @@ def build_wheel(
 ) -> str:
     ensure_generated()
     backend = importlib.import_module("uv_build")
-    return backend.build_wheel(wheel_directory, config_settings, metadata_directory)
+    result = backend.build_wheel(wheel_directory, config_settings, metadata_directory)
+    if not isinstance(result, str):
+        raise TypeError("uv_build.build_wheel must return a filename")
+    return result
 
 
 def build_sdist(sdist_directory: str, config_settings: dict[str, Any] | None = None) -> str:
     ensure_generated()
     backend = importlib.import_module("uv_build")
-    return backend.build_sdist(sdist_directory, config_settings)
+    result = backend.build_sdist(sdist_directory, config_settings)
+    if not isinstance(result, str):
+        raise TypeError("uv_build.build_sdist must return a filename")
+    return result
 
 
 def build_editable(
@@ -123,10 +132,13 @@ def build_editable(
 ) -> str:
     ensure_generated()
     backend = importlib.import_module("uv_build")
-    return backend.build_editable(wheel_directory, config_settings, metadata_directory)
+    result = backend.build_editable(wheel_directory, config_settings, metadata_directory)
+    if not isinstance(result, str):
+        raise TypeError("uv_build.build_editable must return a filename")
+    return result
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> Any:  # noqa: ANN401 -- PEP 517 hooks have distinct signatures
     """Forward optional PEP 517/660 hooks to the underlying backend."""
     if name not in {
         "get_requires_for_build_wheel",

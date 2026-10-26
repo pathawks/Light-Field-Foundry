@@ -186,7 +186,7 @@ def stage_raw(source: LfpContainer, target: Path) -> None:
                     parent[key] = []
     payloads: dict[str, bytes] = {}
 
-    def include(value: Any) -> None:
+    def include(value: object) -> None:
         if isinstance(value, dict):
             for child in value.values():
                 include(child)
@@ -209,7 +209,7 @@ def stage_raw(source: LfpContainer, target: Path) -> None:
     with target.open("xb") as output:
         output.write(struct.pack(">8sII", FILE_MAGIC, 1, 0))
         for index, payload in enumerate((encoded, *payloads.values())):
-            digest = ("sha1-" + hashlib.sha1(payload).hexdigest()).encode()
+            digest = ("sha1-" + hashlib.sha1(payload, usedforsecurity=False).hexdigest()).encode()
             output.write(
                 struct.pack(
                     ">8sq80s", MASTER_MAGIC if index == 0 else CHUNK_MAGIC, len(payload), digest

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import errno
 import sys
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Never
 
 import numpy as np
 import pytest
@@ -54,7 +55,8 @@ def test_cross_filesystem_publication_cleans_its_copy(
     else:
         pipeline._publish(stage, target)
     assert target.read_bytes() == (b"existing output" if collision else stage.read_bytes())
-    assert copies and all(not copy.parent.exists() for copy in copies)
+    assert copies
+    assert all(not copy.parent.exists() for copy in copies)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["photo.avif", "verified.avif"]
 
 
@@ -140,8 +142,9 @@ def _mock_conversion(
     )
     monkeypatch.setattr(pipeline, "build_metadata", lambda *_, **__: object())
 
-    def assemble(*args: Any) -> object:
-        stage = Path(args[-1])
+    def assemble(*args: object) -> object:
+        stage = args[-1]
+        assert isinstance(stage, Path)
         state["stage"] = stage
         stage.write_bytes(b"complete assembled candidate")
         return object()
@@ -159,7 +162,7 @@ def test_failure_removes_all_owned_temporary_files(
     options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
     original_files = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    def fail(*_args: Any, **_kwargs: Any) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
         state["injected_failure_reached"] = True
         if failure == "interruption":
             raise KeyboardInterrupt
@@ -177,7 +180,8 @@ def test_failure_removes_all_owned_temporary_files(
         pipeline.convert(options, tools, lambda _: None)
     assert state.get("injected_failure_reached") is True
     assert not options.output.exists()
-    assert workdirs and all(not path.exists() for path in workdirs)
+    assert workdirs
+    assert all(not path.exists() for path in workdirs)
     assert "stage" not in state or not state["stage"].exists()
     assert not list(tmp_path.glob(".photo.avif.lff-*"))
     assert {
@@ -194,7 +198,8 @@ def test_success_publishes_one_file_and_preserves_external_inputs(
     assert options.output.read_bytes() == b"complete assembled candidate"
     assert result["bytes"] == options.output.stat().st_size
     assert len(str(result["sha256"])) == 64
-    assert workdirs and all(not path.exists() for path in workdirs)
+    assert workdirs
+    assert all(not path.exists() for path in workdirs)
     assert not state["stage"].exists()
     assert not list(tmp_path.glob(".photo.avif.lff-*"))
     remaining = {
@@ -210,7 +215,7 @@ def test_output_collision_after_validation_preserves_existing_output(
 ) -> None:
     options, tools, workdirs, _ = _mock_conversion(tmp_path, monkeypatch)
 
-    def race(*_: Any) -> dict[str, bool]:
+    def race(*_: object) -> dict[str, bool]:
         options.output.write_bytes(b"another writer won")
         return {"verified": True}
 
@@ -286,10 +291,20 @@ def test_disparity_range_reaches_metadata_and_native_verification_without_changi
         return original_encode(tools, work, prepared)
 
     monkeypatch.setattr(pipeline, "encode_depth", encode_depth)
-    metadata_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    metadata_calls: list[tuple[float, float, Mapping[str, object], dict[str, object]]] = []
 
-    def metadata(*args: Any, **kwargs: Any) -> object:
-        metadata_calls.append((args, kwargs))
+    def metadata(
+        _public: object,
+        _recipe: object,
+        _settings: object,
+        provenance: Mapping[str, object],
+        _width: int,
+        _height: int,
+        a: float,
+        b: float,
+        **kwargs: object,
+    ) -> object:
+        metadata_calls.append((a, b, provenance, kwargs))
         return object()
 
     monkeypatch.setattr(pipeline, "build_metadata", metadata)
@@ -310,11 +325,14 @@ def test_disparity_range_reaches_metadata_and_native_verification_without_changi
     monkeypatch.setattr(pipeline, "verify_native", native)
     pipeline.convert(options, tools, lambda _: None)
     assert len(metadata_calls) == 1
-    args, kwargs = metadata_calls[0]
-    assert args[6:8] == expected
-    assert args[3]["relativeDisparity"]["atCode0"] == expected[0]
-    assert args[3]["relativeDisparity"]["atCode4095"] == expected[1]
-    assert args[3]["depth"] == source_mapping
+    a, b, provenance, kwargs = metadata_calls[0]
+    assert (a, b) == expected
+    assert provenance["relativeDisparity"] == {
+        "atCode0": expected[0],
+        "atCode4095": expected[1],
+        "interpretation": "linear interpolation after L016 expansion; increases toward near; presentation scale, not metric depth",
+    }
+    assert provenance["depth"] == source_mapping
     assert kwargs["source_depth_mapping"] == source_mapping
     assert native_calls == [expected]
     assert len(encoded) == 1
@@ -342,7 +360,7 @@ def test_invalid_disparity_range_fails_before_rendering(
 ) -> None:
     options, tools, workdirs, _ = _mock_conversion(tmp_path, monkeypatch)
     monkeypatch.setattr(pipeline, "doctor", lambda *_: pytest.fail("native tools should not run"))
-    with pytest.raises(LytroError, match="[Dd]isparity"):
+    with pytest.raises(LytroError, match=r"[Dd]isparity"):
         pipeline.convert(
             replace(options, disparity_min=minimum, disparity_max=maximum), tools, lambda _: None
         )
@@ -352,7 +370,7 @@ def test_invalid_disparity_range_fails_before_rendering(
 
 @pytest.mark.parametrize("provide_library", [True, False])
 def test_conversion_refuses_publication_inside_read_only_library(
-    tmp_path, monkeypatch, provide_library
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provide_library: bool
 ) -> None:
     options, tools, _, _ = _mock_conversion(tmp_path, monkeypatch)
     root = tmp_path / "library.lytrolibrary"
@@ -367,7 +385,7 @@ def test_conversion_refuses_publication_inside_read_only_library(
 
 @pytest.mark.parametrize("require_existing", [False, True])
 def test_exported_stack_uses_original_center_depth_and_verified_raw_for_eyes(
-    tmp_path, monkeypatch, require_existing
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, require_existing: bool
 ) -> None:
     options, tools, _, state = _mock_conversion(tmp_path, monkeypatch)
     options = replace(
@@ -396,7 +414,10 @@ def test_exported_stack_uses_original_center_depth_and_verified_raw_for_eyes(
     original_assemble = pipeline.bmff.assemble
     flags = []
 
-    def assemble(*args, **kwargs):
+    def assemble(
+        *args: Any,  # noqa: ANN401 -- Forward heterogeneous arguments to the original hook.
+        **kwargs: object,
+    ) -> pipeline.bmff.AssemblyResult:
         flags.append(kwargs)
         return original_assemble(*args)
 
@@ -427,64 +448,75 @@ def test_exported_stack_uses_original_center_depth_and_verified_raw_for_eyes(
         {"edof_center": False, "no_recompute_edof": True},
     ],
 )
-def test_invalid_recompute_policy_fails_before_any_processing(tmp_path, monkeypatch, kwargs):
+def test_invalid_recompute_policy_fails_before_any_processing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
+) -> None:
     options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
 
-    def unexpected(*_, **__):
+    def unexpected(*_: object, **__: object) -> None:
         pytest.fail("Invalid policy reached source discovery or native processing")
 
     monkeypatch.setattr(pipeline, "select_sources", unexpected)
     monkeypatch.setattr(pipeline, "doctor", unexpected)
     with pytest.raises(LytroError, match="no-recompute"):
         pipeline.convert(replace(options, **kwargs), tools)
-    assert not workdirs and not state.get("commands")
+    assert not workdirs
+    assert not state.get("commands")
     assert not options.output.exists()
 
 
 @pytest.mark.parametrize(
-    "kwargs,flag",
+    ("kwargs", "flag"),
     [
         ({"no_recompute_depth": True}, "--no-recompute-depth"),
         ({"no_recompute_edof": True}, "--no-recompute-edof"),
         ({"no_recompute_depth": True, "no_recompute_edof": True}, "--no-recompute-depth"),
     ],
 )
-def test_required_missing_cache_fails_before_doctor_or_native(tmp_path, monkeypatch, kwargs, flag):
+def test_required_missing_cache_fails_before_doctor_or_native(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool], flag: str
+) -> None:
     options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
 
-    def unexpected(*_, **__):
+    def unexpected(*_: object, **__: object) -> None:
         pytest.fail("Missing required cache reached native processing")
 
     monkeypatch.setattr(pipeline, "doctor", unexpected)
     with pytest.raises(LytroError, match=flag):
         pipeline.convert(replace(options, **kwargs), tools)
-    assert not workdirs and not state.get("commands")
+    assert not workdirs
+    assert not state.get("commands")
     assert not options.output.exists()
 
 
 @pytest.mark.parametrize("role", ["depth", "edof"])
-def test_unusable_required_cache_never_falls_back_to_recomputation(tmp_path, monkeypatch, role):
+def test_unusable_required_cache_never_falls_back_to_recomputation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
     options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
     selected = state["sources"]
     setattr(selected, role, SimpleNamespace(path=options.capture))
 
-    def unusable(*_, **__):
+    def unusable(*_: object, **__: object) -> Never:
         raise LytroError("Selected cache is not a lossless supported encoding")
 
     monkeypatch.setattr(pipeline, "extract_" + role, unusable)
 
-    def unexpected(*_, **__):
+    def unexpected(*_: object, **__: object) -> None:
         pytest.fail("Unusable required cache reached native processing")
 
     monkeypatch.setattr(pipeline, "doctor", unexpected)
     with pytest.raises(LytroError, match="lossless"):
         pipeline.convert(replace(options, **{"no_recompute_" + role: True}), tools)
-    assert not workdirs and not state.get("commands")
+    assert not workdirs
+    assert not state.get("commands")
     assert not options.output.exists()
 
 
 @pytest.mark.parametrize("role", ["depth", "edof"])
-def test_required_cache_can_be_combined_with_other_automatic_role(tmp_path, monkeypatch, role):
+def test_required_cache_can_be_combined_with_other_automatic_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
     options, tools, _, state = _mock_conversion(tmp_path, monkeypatch)
     selected = state["sources"]
     setattr(selected, role, SimpleNamespace(path=options.capture))
@@ -506,14 +538,14 @@ def test_required_cache_can_be_combined_with_other_automatic_role(tmp_path, monk
 
 @pytest.mark.parametrize("failure", ["depth-geometry", "edof-finishing", "edof-color"])
 def test_required_cache_late_validation_failure_prevents_other_role_generation(
-    tmp_path, monkeypatch, failure
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
     options, tools, workdirs, state = _mock_conversion(tmp_path, monkeypatch)
     selected = state["sources"]
     role = "depth" if failure == "depth-geometry" else "edof"
     setattr(selected, role, SimpleNamespace(path=options.capture))
 
-    def mismatch(*_, **__):
+    def mismatch(*_: object, **__: object) -> Never:
         raise LytroError("Required cached asset has incompatible data")
 
     if failure == "depth-geometry":

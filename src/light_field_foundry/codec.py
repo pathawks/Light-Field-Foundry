@@ -22,7 +22,7 @@ def read_y4m(path: Path) -> tuple[int, str, list[U16]]:
         header = file.readline(4096)
         if not header.startswith(b"YUV4MPEG2 ") or not header.endswith(b"\n"):
             raise LytroError("Malformed native Y4M header.")
-        fields = dict((token[:1], token[1:]) for token in header.strip().split()[1:])
+        fields = {token[:1]: token[1:] for token in header.strip().split()[1:]}
         try:
             width, height = int(fields[b"W"]), int(fields[b"H"])
             chroma = fields[b"C"].decode("ascii")

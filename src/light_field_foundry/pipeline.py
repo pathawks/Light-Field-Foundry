@@ -176,7 +176,9 @@ def _publish(stage: Path, output: Path) -> None:
         raise LytroError(f"Could not atomically publish the AVIF: {exc}") from exc
 
 
-def _check_cached_edof(view: dict, center: dict, defaults: dict) -> None:
+def _check_cached_edof(
+    view: dict[str, object], center: dict[str, object], defaults: dict[str, object]
+) -> None:
     candidates = [value for key, value in view.items() if re.fullmatch(r"recipe\d*", key)]
     if len(candidates) != 1 or not isinstance(candidates[0], dict):
         raise LytroError("Cached EDOF requires exactly one effective recipe; use --recompute-edof")
@@ -383,7 +385,8 @@ def convert(
                 )
             if generated_edof:
                 edof = extract_edof(generated, asset_root=work)
-        assert depth is not None
+        if depth is None:
+            raise LytroError("No verified depth role was produced")
         images: list[RGB16] = []
         for name, recipe in zip(
             ("center", "left", "right"),
@@ -392,7 +395,8 @@ def convert(
         ):
             target = work / f"{name}.tiff"
             if name == "center" and options.edof_center:
-                assert edof is not None
+                if edof is None:
+                    raise LytroError("No verified EDOF role was produced")
                 report("Using the native Extended Depth of Field primary…")
                 target.write_bytes(edof.witness_image)
             else:

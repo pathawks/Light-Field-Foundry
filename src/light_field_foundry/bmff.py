@@ -55,12 +55,13 @@ def boxes(data: bytes, start: int = 0, end: int | None = None) -> list[Box]:
     while start < end:
         if len(result) >= MAX_BOXES or end - start < 8:
             raise ContainerError("too many boxes or truncated box header")
-        size, kind = struct.unpack_from(">I4s", data, start)
+        size = int.from_bytes(data[start : start + 4], "big")
+        kind = data[start + 4 : start + 8]
         header = 8
         if size == 1:
             if end - start < 16:
                 raise ContainerError("truncated extended box header")
-            size = struct.unpack_from(">Q", data, start + 8)[0]
+            size = int.from_bytes(data[start + 8 : start + 16], "big")
             header = 16
         elif size == 0:
             size = end - start
@@ -209,7 +210,8 @@ def _one(parsed: list[Box], kind: bytes, *, optional: bool = False) -> Box | Non
 
 def _required(parsed: list[Box], kind: bytes) -> Box:
     value = _one(parsed, kind)
-    assert value is not None
+    if value is None:
+        raise ContainerError(f"missing required {kind.decode()} box")
     return value
 
 

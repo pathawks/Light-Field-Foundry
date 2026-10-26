@@ -395,12 +395,32 @@ This compiles the schema afresh and compares the actual generated Python, so
 updating the manifest alone cannot make an edited parser pass CI. Installed
 wheels only use the Python runtime; reading a photo never invokes the compiler.
 
+The [code quality workflow](.github/workflows/quality.yml) runs Ruff lint,
+Ruff formatting, and ty on every push to any branch and every pull request,
+without path filters. Its separate `Ruff` and `Types` jobs use Python 3.12 and
+the development tools pinned in `uv.lock`. It can also be run manually.
+
+Ruff requires function argument and return annotations, and checks imports,
+common bugs, security mistakes, pytest usage, and Python modernization.
+Formatting uses a 100-character target and formats code examples in docstrings.
+ty checks application code, tests, and the build backend with every diagnostic
+enabled as an error, warnings treated as failures, and strict equality and
+generic narrowing enabled. The generated Kaitai parser is exempt from lint,
+formatting, and direct type checking; its exact compiler output is verified by
+the separate Kaitai workflow. Tests allow assertions and imports inside test
+cases. Other exceptions are documented beside the affected code. Dynamic
+metadata and third-party libraries still have some `Any` types; passing these
+checks does not mean every value is statically typed.
+
+Run the same quality checks locally, then the tests and package build:
+
 ```sh
-uv run python build_backend.py --verify
-uv run ruff format --check .
-uv run ruff check .
-uv run ty check
-uv run pytest
+uv sync --locked --dev
+uv run --frozen --no-sync ruff check .
+uv run --frozen --no-sync ruff format --check .
+uv run --frozen --no-sync ty check --error-on-warning
+uv run --frozen --no-sync python build_backend.py --verify
+uv run --frozen --no-sync pytest
 uv build
 ```
 

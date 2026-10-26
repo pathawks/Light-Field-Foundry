@@ -27,7 +27,7 @@ RAW = b"\x11generated raw sample bytes\x00\xff"
 
 
 def _ref(payload: bytes) -> str:
-    return "sha1-" + hashlib.sha1(payload).hexdigest()
+    return "sha1-" + hashlib.sha1(payload, usedforsecurity=False).hexdigest()
 
 
 def _write(path: Path, master: dict[str, Any], *payloads: bytes) -> Path:
@@ -96,9 +96,12 @@ def test_independent_matching_roles_are_selected_without_loading_assets(
     before = {path: path.read_bytes() for path in (raw, recipe, depth, edof)}
     selected = sources.select_sources(None, raw=raw, recipe=recipe, depth=depth, edof=edof)
     assert selected.raw.path == raw
-    assert selected.recipe is not None and selected.recipe.path == recipe
-    assert selected.depth is not None and selected.depth.path == depth
-    assert selected.edof is not None and selected.edof.path == edof
+    assert selected.recipe is not None
+    assert selected.recipe.path == recipe
+    assert selected.depth is not None
+    assert selected.depth.path == depth
+    assert selected.edof is not None
+    assert selected.edof.path == edof
     assert selected.metadata is selected.raw
     for role, entry in selected.provenance.items():
         assert entry["rawImageRef"] == _ref(RAW), role
@@ -153,7 +156,8 @@ def test_recomputed_roles_do_not_open_ignored_cache_files(
         recompute_depth=True,
         recompute_edof=True,
     )
-    assert selected.depth is None and selected.edof is None
+    assert selected.depth is None
+    assert selected.edof is None
 
 
 def test_recipe_only_input_can_anchor_library_fallback_and_ignore_unusable_caches(
@@ -180,8 +184,10 @@ def test_recipe_only_input_can_anchor_library_fallback_and_ignore_unusable_cache
     )
     assert lookups == [(recipe, library)]
     assert selected.raw.path == raw
-    assert selected.recipe is not None and selected.recipe.path == recipe
-    assert selected.depth is None and selected.edof is None
+    assert selected.recipe is not None
+    assert selected.recipe.path == recipe
+    assert selected.depth is None
+    assert selected.edof is None
 
 
 @pytest.mark.parametrize("kind", ["edofWarpPreAdjust", "limitedDepth", "refocused"])
@@ -199,11 +205,14 @@ def test_positional_processed_defaults_can_be_recomputed_independently(
 ) -> None:
     capture = _role(tmp_path / "combined.lfp", embedded=True, recipe=True, kind="edofWarp")
     cached = sources.select_sources(capture)
-    assert cached.recipe is not None and cached.depth is not None and cached.edof is not None
+    assert cached.recipe is not None
+    assert cached.depth is not None
+    assert cached.edof is not None
     fresh = sources.select_sources(capture, recompute_depth=True, recompute_edof=True)
     assert fresh.raw.path == capture
     assert fresh.recipe is not None
-    assert fresh.depth is None and fresh.edof is None
+    assert fresh.depth is None
+    assert fresh.edof is None
 
 
 @pytest.mark.parametrize("nested_picture", [False, True])
@@ -314,7 +323,8 @@ def test_frame_less_recipe_is_reusable_with_explicit_raw_and_has_no_capture_iden
     )
     original = recipe.read_bytes()
     selected = sources.select_sources(None, raw=raw, recipe=recipe)
-    assert selected.recipe is not None and selected.recipe.path == recipe
+    assert selected.recipe is not None
+    assert selected.recipe.path == recipe
     assert selected.provenance["recipe"]["rawImageRef"] is None
     assert selected.provenance["raw"]["rawImageRef"] == _ref(RAW)
     assert selected.metadata is selected.raw

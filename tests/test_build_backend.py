@@ -30,7 +30,7 @@ def source_tree(tmp_path: Path) -> Path:
 def run_check(
     root: Path, *args: str, compiler: Path | None = None, version: str = "0.11"
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 -- Executes this test's copied build script with Python.
         [sys.executable, str(root / "build_backend.py"), *args],
         env={
             **os.environ,

@@ -1,5 +1,5 @@
 from copy import deepcopy
-from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -7,10 +7,10 @@ import pytest
 from light_field_foundry.errors import LytroError
 from light_field_foundry.lfp import FloatDepth, validate_alignment
 from light_field_foundry.pipeline import _check_cached_edof
-from light_field_foundry.recipe import GEOMETRY
+from light_field_foundry.recipe import GEOMETRY, ResolvedRecipe
 
 
-def recipe():
+def recipe() -> dict[str, Any]:
     return {
         **deepcopy(GEOMETRY),
         "viewPerspectiveU": 0,
@@ -24,7 +24,7 @@ def recipe():
     }
 
 
-def test_cached_edof_is_independent_of_defocus_but_finishing_must_match():
+def test_cached_edof_is_independent_of_defocus_but_finishing_must_match() -> None:
     cached = recipe()
     target = {
         **cached,
@@ -42,7 +42,7 @@ def test_cached_edof_is_independent_of_defocus_but_finishing_must_match():
         _check_cached_edof({"recipe": cached, "recipe4": target}, cached, {})
 
 
-def depth(width, height, mapping=None):
+def depth(width: int, height: int, mapping: dict[str, Any] | None = None) -> FloatDepth:
     return FloatDepth(
         np.zeros((height, width), np.float32),
         width,
@@ -59,8 +59,8 @@ def depth(width, height, mapping=None):
     )
 
 
-def test_depth_only_requires_aspect_consistency_or_explicit_supported_mapping():
-    resolved = SimpleNamespace(center=recipe())
+def test_depth_only_requires_aspect_consistency_or_explicit_supported_mapping() -> None:
+    resolved = ResolvedRecipe(recipe(), recipe(), recipe(), 0, 0, 0)
     validate_alignment(depth(4, 4), resolved, (1134, 1134))
     with pytest.raises(LytroError, match="aspect"):
         validate_alignment(depth(2, 4), resolved, (1134, 1134))

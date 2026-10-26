@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from typing import Never
 
 import imagecodecs
 import numpy as np
@@ -22,7 +23,7 @@ def test_depth_encoder_preserves_all_codes_without_external_tools(
     executable = Path(sys.executable)
     tools = Tools(executable, executable, executable, threads=2)
 
-    def external_call(*_args, **_kwargs):
+    def external_call(*_args: object, **_kwargs: object) -> None:
         pytest.fail("Depth encoding must not launch an external tool")
 
     monkeypatch.setattr(Tools, "run", external_call)
@@ -51,11 +52,11 @@ def test_invalid_depth_is_rejected_before_encoding(
     executable = Path(sys.executable)
     tools = Tools(executable, executable, executable)
 
-    def encode(*_args, **_kwargs):
+    def encode(*_args: object, **_kwargs: object) -> None:
         pytest.fail("Invalid depth reached the encoder")
 
     monkeypatch.setattr(imagecodecs, "avif_encode", encode)
-    with pytest.raises(LytroError, match="uint16 plane with codes 0..4095"):
+    with pytest.raises(LytroError, match=r"uint16 plane with codes 0\.\.4095"):
         encode_depth(tools, tmp_path, samples)
     assert not list(tmp_path.iterdir())
 
@@ -66,7 +67,7 @@ def test_depth_encoder_failure_is_reported_without_output(
     executable = Path(sys.executable)
     tools = Tools(executable, executable, executable)
 
-    def encode(*_args, **_kwargs):
+    def encode(*_args: object, **_kwargs: object) -> Never:
         raise RuntimeError("No codec available")
 
     monkeypatch.setattr(imagecodecs, "avif_encode", encode)

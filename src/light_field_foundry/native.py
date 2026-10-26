@@ -49,4 +49,9 @@ def verify_native(
         raise LytroError("Native depth verifier returned malformed diagnostics.") from exc
     if not isinstance(decoded, dict) or decoded.get("verified") is not True:
         raise LytroError("Native depth verification did not succeed.")
-    return decoded
+    diagnostics: dict[str, object] = {}
+    for key, value in decoded.items():
+        if not isinstance(key, str):
+            raise LytroError("Native depth verifier returned a nonstring diagnostic key.")
+        diagnostics[key] = value
+    return diagnostics

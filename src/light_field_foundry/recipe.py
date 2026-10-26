@@ -8,6 +8,7 @@ stereo pivot in BOTH fields. No native CLI/recipe precedence is assumed.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -70,8 +71,6 @@ class ResolvedRecipe:
         }
 
     def write(self, directory: Path) -> dict[str, Path]:
-        import json
-
         result: dict[str, Path] = {}
         for name, recipe in self.views.items():
             path = directory / f"{name}-recipe.json"
@@ -84,7 +83,7 @@ def load_recipe(path: Path) -> dict[str, Any]:
     return read_json_bytes(Path(path).read_bytes(), "recipe")
 
 
-def _finite(value: Any, name: str) -> float:
+def _finite(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise LytroError(f"{name} must be a finite number")
     result = float(np.float32(value))
@@ -93,7 +92,7 @@ def _finite(value: Any, name: str) -> float:
     return result
 
 
-def _check_tree(value: Any) -> None:
+def _check_tree(value: object) -> None:
     if isinstance(value, dict):
         for child in value.values():
             _check_tree(child)

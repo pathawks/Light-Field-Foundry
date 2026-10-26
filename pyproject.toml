@@ -24,7 +24,7 @@ dependencies = [
 lff = "light_field_foundry.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.11", "ty>=0.0.1a14"]
+dev = ["pytest>=8.3", "ruff>=0.17.2", "ty>=0.0.91"]
 
 [tool.uv.build-backend]
 source-include = [".python-version", "tests/**", "uv.lock", "build_backend.py", "formats/**"]
@@ -43,15 +43,28 @@ compiler-version = "0.11.0"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+required-version = ">=0.17.2"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM"]
+# Explicit rule families keep upgrades reviewable and avoid formatter conflicts.
+select = [
+  "E4", "E7", "E9", "F", "I", "UP", "B", "SIM",
+  "ANN",                         # Require annotated arguments and return values.
+  "A", "ASYNC", "C4", "DTZ", "EXE", "FA", "ICN", "ISC", "LOG", "PIE",
+  "PLC", "PLE", "PLW",          # Pylint correctness, conventions, and warnings.
+  "PT", "PYI", "RET", "RSE", "RUF", "S", "T10", "T20", "TID", "YTT",
+]
+allowed-confusables = ["×"]       # Dimension labels use the multiplication sign.
 
 [tool.ruff.lint.per-file-ignores]
+# Generated output is verified against the pinned compiler in its own workflow.
 "src/light_field_foundry/_generated/lfp_framing.py" = ["ALL"]
+# Assertions and imports inside test cases are deliberate pytest idioms.
+"tests/**" = ["S101", "PLC0415"]
 
 [tool.ruff.format]
 exclude = ["src/light_field_foundry/_generated/lfp_framing.py"]
+docstring-code-format = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -59,4 +72,19 @@ markers = ["native: exercises installed native codecs", "external: requires user
 
 [tool.ty.environment]
 python-version = "3.12"
+
+[tool.ty.src]
+include = ["src", "tests", "build_backend.py"]
+exclude = ["src/light_field_foundry/_generated/lfp_framing.py"]
+
+[tool.ty.rules]
+# Includes opt-in checks for Any/Unknown leakage and missing generic arguments.
+all = "error"
+
+[tool.ty.analysis]
+strict-equality-semantics = true
+strict-generic-narrowing = true
+
+[tool.ty.terminal]
+error-on-warning = true
 

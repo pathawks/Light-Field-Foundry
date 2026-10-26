@@ -5,6 +5,7 @@ import json
 import os
 import struct
 from pathlib import Path
+from typing import Never
 
 import numpy as np
 import pytest
@@ -26,7 +27,7 @@ from light_field_foundry.lfp import (
 
 
 def _reference(data: bytes) -> str:
-    return "sha1-" + hashlib.sha1(data).hexdigest()
+    return "sha1-" + hashlib.sha1(data, usedforsecurity=False).hexdigest()
 
 
 def _container(path: Path, master: bytes, *payloads: bytes) -> Path:
@@ -139,7 +140,9 @@ def test_configured_section_limit_is_checked_before_reading_payload(
     def bounded_read(stream: lfp.KaitaiStream, size: int) -> bytes:
         if size == 2:
             pytest.fail("Oversized payload was read before its length was validated")
-        return read_bytes(stream, size)
+        payload = read_bytes(stream, size)
+        assert isinstance(payload, bytes)
+        return payload
 
     monkeypatch.setattr(lfp.KaitaiStream, "read_bytes", bounded_read)
     with pytest.raises(LytroError):
@@ -196,7 +199,8 @@ def test_complete_kaitai_grammar_and_streaming_view_agree(tmp_path: Path) -> Non
         assert header.chunk_header_size == 96
         assert not hasattr(header, "_m_chunks")
         first = LfpFraming.Chunk(framing, header, header)
-        assert first.is_master and first.marker.tag == "LFM"
+        assert first.is_master
+        assert first.marker.tag == "LFM"
         position = framing.pos()
         chunks = header.chunks
         assert framing.pos() == position
@@ -306,7 +310,8 @@ def test_owned_unpacked_depth_and_tiff_witness_are_read(tmp_path: Path, absolute
     depth = extract_depth(path, asset_root=root)
     np.testing.assert_array_equal(depth.samples, values)
     assert depth.witness_image == b"original generated tiff with ICC"
-    assert depth.witness_perspective == (0, 0) and depth.image_size == (2, 2)
+    assert depth.witness_perspective == (0, 0)
+    assert depth.image_size == (2, 2)
 
 
 def test_unpacked_paths_are_disabled_without_explicit_root(tmp_path: Path) -> None:
@@ -636,7 +641,7 @@ def test_edof_role_rejects_lossy_or_ambiguous_tiff_compression(
     path = _container(tmp_path / "lossy-edof.lfp", json.dumps(master).encode(), payload)
     before = path.read_bytes()
 
-    def decode(*_args, **_kwargs):
+    def decode(*_args: object, **_kwargs: object) -> Never:
         raise AssertionError("Rejected EDOF compression reached a pixel decoder")
 
     monkeypatch.setattr(tifffile.TiffPage, "asarray", decode)

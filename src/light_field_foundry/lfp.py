@@ -9,6 +9,7 @@ Explicit exported-stack inputs retain their native baked geometry.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -17,14 +18,20 @@ import stat
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Never
 
 import numpy as np
+import tifffile
 from kaitaistruct import KaitaiStream, KaitaiStructError
 from numpy.typing import NDArray
+from PIL import Image
 
 from ._generated.lfp_framing import LfpFraming
 from .errors import LytroError
+from .images import require_lossless_tiff
+
+if TYPE_CHECKING:
+    from .recipe import ResolvedRecipe
 
 FILE_MAGIC = b"\x89LFP\r\n\x1a\n"
 MASTER_MAGIC = b"\x89LFM\r\n\x1a\n"
@@ -46,7 +53,7 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _constant(value: str) -> Any:
+def _constant(value: str) -> Never:
     raise LytroError(f"Nonfinite JSON number: {value}")
 
 
@@ -61,7 +68,7 @@ def read_json_bytes(data: bytes, description: str = "JSON") -> dict[str, Any]:
     if not isinstance(obj, dict):
         raise LytroError(f"{description} must contain a JSON object")
 
-    def check(value: Any) -> None:
+    def check(value: object) -> None:
         if isinstance(value, dict):
             for child in value.values():
                 check(child)
@@ -250,7 +257,7 @@ class LfpContainer:
 def _verify_digest(reference: str, data: bytes) -> None:
     if not REFERENCE.fullmatch(reference):
         raise LytroError(f"Unsupported LFP chunk reference: {reference}")
-    if hashlib.sha1(data).hexdigest() != reference[5:]:
+    if hashlib.sha1(data, usedforsecurity=False).hexdigest() != reference[5:]:
         raise LytroError(f"LFP SHA-1 digest mismatch: {reference}")
 
 
@@ -305,7 +312,8 @@ def read_lfp(path: Path) -> LfpContainer:
     if len(masters) != 1:
         raise LytroError("LFP must contain exactly one master JSON chunk")
     master = masters[0]
-    assert master.metadata is not None
+    if master.metadata is None:
+        raise LytroError("LFP master must contain JSON metadata")
     return LfpContainer(
         path,
         header.version,
@@ -419,19 +427,19 @@ class FloatDepth:
         }
 
 
-def _number(value: Any, name: str) -> float:
+def _number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
         raise LytroError(f"{name} must be a finite number")
     return float(value)
 
 
-def _dimension(value: Any, name: str) -> int:
+def _dimension(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 16384:
         raise LytroError(f"{name} must be a positive bounded dimension")
     return value
 
 
-def _read_owned_asset(value: Any, asset_root: Path, maximum: int) -> bytes:
+def _read_owned_asset(value: object, asset_root: Path, maximum: int) -> bytes:
     """Read only regular, nonsymlink files below the explicitly supplied asset root.
 
     File-descriptor-relative opens prevent a path component from being replaced
@@ -533,12 +541,6 @@ def _center_witness(
 
 def _tiff_dimensions(payload: bytes) -> tuple[int, int]:
     """Measure the actual bounded TIFF raster, not potentially stale LFP dimensions."""
-    import io
-
-    import tifffile
-
-    from .images import require_lossless_tiff
-
     try:
         with tifffile.TiffFile(io.BytesIO(payload)) as image:
             if len(image.pages) != 1:
@@ -605,10 +607,6 @@ def extract_depth(
     a = _number(descriptor.get("minLambda"), "depth minLambda")
     b = _number(descriptor.get("maxLambda"), "depth maxLambda")
     if descriptor.get("representation") == "pngEncodedByte":
-        import io
-
-        from PIL import Image
-
         payload = _asset_payload(lfp, descriptor, asset_root, MAX_SECTION_BYTES)
         with Image.open(io.BytesIO(payload)) as image:
             if image.format != "PNG" or image.mode != "L" or image.size != (width, height):
@@ -669,7 +667,9 @@ def quantize_depth(depth: FloatDepth) -> NDArray[np.uint16]:
     return np.rint(4095.0 * (samples - a) / (b - a)).astype(np.uint16)
 
 
-def validate_alignment(depth: FloatDepth, resolved: Any, color_size: tuple[int, int]) -> None:
+def validate_alignment(
+    depth: FloatDepth, resolved: ResolvedRecipe, color_size: tuple[int, int]
+) -> None:
     """Check F01 canonical-center or matching native baked depth geometry.
 
     A paired TIFF supplies an image-extent witness. A depth-only role instead

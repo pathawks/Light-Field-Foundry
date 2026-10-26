@@ -31,7 +31,7 @@ console = Console(highlight=False)
 def _show_version(value: bool) -> None:
     if value:
         console.print(__version__)
-        raise typer.Exit()
+        raise typer.Exit
 
 
 def _doctor(tools: Tools) -> None:
@@ -262,13 +262,20 @@ def image_out(
     missing = [name for name, value in required.items() if value is None]
     if missing:
         raise typer.BadParameter("Required for export: " + ", ".join(missing))
+    # Keep the required-value guard explicit so validation also survives python -O.
+    if (
+        calibration is None
+        or output is None
+        or perspective_u is None
+        or perspective_v is None
+        or baseline is None
+    ):
+        raise typer.BadParameter("Required export options are missing.")
     try:
         minimum = DEFAULT_DISPARITY_MIN if disparity_min is None else disparity_min
         maximum = DEFAULT_DISPARITY_MAX if disparity_max is None else disparity_max
         validate_disparity_range(minimum, maximum)
         tools = Tools.discover(avifenc, avifdec, threads, timeout)
-        assert calibration is not None and output is not None
-        assert perspective_u is not None and perspective_v is not None and baseline is not None
         options = Conversion(
             capture,
             calibration,

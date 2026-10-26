@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Never
 
 import numpy as np
 import pytest
@@ -27,7 +28,8 @@ def test_rgb16_tiff_png_bridge_preserves_every_code_and_icc(tmp_path: Path) -> N
     pixels, restored = read_png(target)
     assert np.array_equal(pixels, rgb)
     assert restored == icc
-    assert image.cicp == "2/2/0" and not image.srgb
+    assert image.cicp == "2/2/0"
+    assert not image.srgb
 
 
 @pytest.mark.parametrize(
@@ -125,7 +127,7 @@ def test_ambiguous_or_lossy_tiff_codec_is_rejected_before_decoding(
     struct.pack_into("<H", data, offset, compression)
     path.write_bytes(data)
 
-    def decode(*_args, **_kwargs):
+    def decode(*_args: object, **_kwargs: object) -> Never:
         raise AssertionError("Rejected TIFF compression reached a pixel decoder")
 
     monkeypatch.setattr(tifffile.TiffPage, "asarray", decode)
