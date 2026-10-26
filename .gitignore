@@ -7,4 +7,6 @@ __pycache__/
 dist/
 *.egg-info/
 .DS_Store
+/TNT_AVIF_PIPELINE_PLAN.md
+/docs/
 

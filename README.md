@@ -53,8 +53,7 @@ supply crop/rotation for recomputation.
 Exported `edofWarp` stacks also preserve their saved rotation, crop and focus
 spread, using the original stack center/depth and matching raw captures for
 independent stereo eyes. Other cameras, pan/zoom/tilt and animated rendering
-remain unsupported. See [the pipeline contract](TNT_AVIF_PIPELINE_PLAN.md) and
-[development evidence and acceptance limits](docs/DEVELOPMENT_ACCEPTANCE.md).
+remain unsupported.
 
 ## Setup
 
